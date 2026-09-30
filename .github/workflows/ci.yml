@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的重复触发只保留最新一次，避免排队堆积
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 语法检查 / 导入校验 / 单元测试
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          # CI 只做 CPU 推理，安装 CPU 版 PyTorch 以显著缩短耗时
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pyyaml
+
+      - name: 语法检查（编译全部 .py）
+        run: python -m compileall -q webapp train scripts datasets tests
+
+      - name: 导入校验（确保模块可加载）
+        run: |
+          cd webapp
+          python -c "import config, db, detector, imageio_cn, fontutil, camera, video_jobs, train_manager, app"
+          echo '所有模块导入成功'
+
+      - name: 离线单元测试
+        run: python tests/test_unit.py
+
+      - name: 冒烟测试（服务可启动且页面可达）
+        run: |
+          cd webapp
+          python app.py &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5000/ >/dev/null 2>&1; then
+              echo "服务已就绪（第 $i 次探测）"
+              break
+            fi
+            sleep 2
+          done
+          echo "--- 页面可达性 ---"
+          failed=0
+          for path in / /detect /camera /records /stats /train /eval /api/env /api/stats; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:5000${path}")
+            echo "  ${path} -> HTTP ${code}"
+            case "$path" in
+              /api/*) [ "$code" = "200" ] || failed=1 ;;
+              *)      [ "$code" = "200" ] || failed=1 ;;
+            esac
+          done
+          kill $SERVER_PID 2>/dev/null || true
+          exit $failed
