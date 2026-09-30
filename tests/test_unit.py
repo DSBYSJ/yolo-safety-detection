@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import traceback
 import unittest
 from pathlib import Path
@@ -1444,6 +1445,253 @@ class TestCameraDb(unittest.TestCase):
         self.assertEqual(self.cdb.count(), after, "不应重复导入")
 
 
+class TestAttendance(unittest.TestCase):
+    """人脸打卡：只依据「当日是否识别到」判定打卡 / 缺勤。
+
+    这是本模块唯一需要钉死的东西 —— 判定逻辑一旦被改成
+    「没戴安全帽也算缺勤」或「访客也参与缺勤判定」，
+    报表就会出现大量无法解释的行，而这类错误在手工点界面时
+    很难看出来（页面照常显示，只是数字不对）。
+    """
+
+    def setUp(self):
+        import config
+        import face_db
+
+        self._tmp = tempfile.mkdtemp()
+        self._old_db = config.DB_PATH
+        config.DB_PATH = Path(self._tmp) / "att_test.db"
+
+        import attendance
+
+        self.f = face_db
+        self.at = attendance
+        self.today = time.strftime("%Y-%m-%d")
+        self.f.close()
+        self.f.init_db()
+
+    def tearDown(self):
+        import config
+
+        self.f.close()
+        config.DB_PATH = self._old_db
+
+    def _vec(self, idx=0):
+        v = np.zeros(512, dtype=np.float32)
+        v[idx] = 1.0
+        return v
+
+    def _seen(self, name, when, is_temp=False, pid=1):
+        """直接往 face_seen 插一条指定时间的记录。
+
+        add_seen 用 _now() 写当前时间，无法构造历史日期 ——
+        而打卡判定的核心正是「按日期分组」，因此必须能造出任意时刻的流水。
+        """
+        conn = self.f.get_conn()
+        conn.execute(
+            "INSERT INTO face_seen (created_at, person_id, person_name, is_temp, score) "
+            "VALUES (?,?,?,?,?)",
+            (when, pid, name, 1 if is_temp else 0, 0.9),
+        )
+        conn.commit()
+
+    # ---------- 日期参数 ----------
+    def test_validate_day_accepts_iso(self):
+        self.assertEqual(self.at.validate_day(" 2026-09-30 "), "2026-09-30")
+
+    def test_validate_day_rejects_garbage(self):
+        for bad in ("", "2026/09/30", "20260930", "今天", "2026-13-01", None):
+            with self.assertRaises(ValueError):
+                self.at.validate_day(bad)
+
+    # ---------- 核心判定 ----------
+    def test_present_when_seen_that_day(self):
+        """当日有记录 → 打卡，且首次/末次时间取对。"""
+        self.f.register("张工", self._vec(0))
+        self._seen("张工", "2026-09-30 08:05:00")
+        self._seen("张工", "2026-09-30 17:30:00")
+
+        rows = self.at.daily_status("2026-09-30")
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r["status"], "present")
+        self.assertEqual(r["status_cn"], "打卡")
+        self.assertEqual(r["first_hm"], "08:05")
+        self.assertEqual(r["last_hm"], "17:30")
+        self.assertEqual(r["seen_n"], 2)
+
+    def test_absent_when_no_record_that_day(self):
+        """底库有人、当日无记录 → 缺勤。"""
+        self.f.register("张工", self._vec(0))
+        rows = self.at.daily_status("2026-09-30")
+        self.assertEqual(rows[0]["status"], "absent")
+        self.assertEqual(rows[0]["status_cn"], "缺勤")
+        self.assertEqual(rows[0]["seen_n"], 0)
+        self.assertIsNone(rows[0]["first_at"])
+
+    def test_record_on_other_day_does_not_count(self):
+        """昨天的记录不能算今天的打卡 —— 日期边界最容易写成 LIKE 前缀匹配。"""
+        self.f.register("张工", self._vec(0))
+        self._seen("张工", "2026-09-29 23:59:59")
+        self._seen("张工", "2026-10-01 00:00:01")
+
+        self.assertEqual(self.at.daily_status("2026-09-29")[0]["status"], "present")
+        self.assertEqual(self.at.daily_status("2026-09-30")[0]["status"], "absent")
+        self.assertEqual(self.at.daily_status("2026-10-01")[0]["status"], "present")
+
+    def test_boundary_midnight_belongs_to_its_own_day(self):
+        """00:00:00 属于当天，23:59:59 也属于当天 —— 半开区间的两端都要测。"""
+        self.f.register("张工", self._vec(0))
+        self._seen("张工", "2026-09-30 00:00:00")
+        self.assertEqual(self.at.daily_status("2026-09-30")[0]["status"], "present")
+
+        self.f.clear_seen()
+        self._seen("张工", "2026-09-30 23:59:59")
+        self.assertEqual(self.at.daily_status("2026-09-30")[0]["status"], "present")
+        self.assertEqual(self.at.daily_status("2026-10-01")[0]["status"], "absent")
+
+    def test_temp_visitor_never_participates(self):
+        """临时访客不参与打卡：它的编号跨重启会重发，算缺勤会产生幽灵记录。"""
+        self.f.register("张工", self._vec(0))
+        self._seen("访客-1", "2026-09-30 09:00:00", is_temp=True, pid=None)
+
+        rows = self.at.daily_status("2026-09-30")
+        self.assertEqual(len(rows), 1, "访客不该出现在应到名单里")
+        self.assertEqual(rows[0]["person_name"], "张工")
+        self.assertEqual(rows[0]["status"], "absent", "只有访客到过，注册人员仍是缺勤")
+
+    def test_equipment_state_does_not_affect_attendance(self):
+        """需求明确：不考虑是否戴口罩。未戴口罩的人照样算打卡。"""
+        pid = self.f.register("张工", self._vec(0))
+        self.f.add_seen(pid, "张工", False, 0.9,
+                        hat_state=False, mask_state=False, source="camera")
+        rows = self.at.daily_status(self.today)
+        self.assertEqual(rows[0]["status"], "present", "装备不合规不该影响打卡判定")
+
+    def test_new_person_not_retroactively_absent(self):
+        """应到名单来自底库，因此新注册的人不会在注册前的日期被追溯成缺勤。"""
+        self.f.register("新人", self._vec(0))
+        summary = self.at.daily_summary("2020-01-01")
+        self.assertEqual(summary["expect"], 1)
+        self.assertEqual(summary["absent"], 1)
+
+        self.f.clear_seen()
+        self.f.delete_person(self.f.list_persons()[0]["id"])
+        self.assertEqual(self.at.daily_summary("2020-01-01")["expect"], 0)
+
+    # ---------- 汇总口径 ----------
+    def test_summary_rate_denominator_is_expect(self):
+        """打卡率分母必须是「应到」而不是「当日有记录的人」——
+        后者恒等于 100%，没有任何信息量。"""
+        for i, n in enumerate(("张工", "李工", "王工", "赵工")):
+            self.f.register(n, self._vec(i))
+        self._seen("张工", "2026-09-30 09:00:00")
+        self._seen("李工", "2026-09-30 09:10:00")
+
+        s = self.at.daily_summary("2026-09-30")
+        self.assertEqual(s["expect"], 4)
+        self.assertEqual(s["present"], 2)
+        self.assertEqual(s["absent"], 2)
+        self.assertAlmostEqual(s["rate"], 0.5, places=3)
+
+    def test_summary_rate_is_none_when_no_persons(self):
+        """底库为空时分母为 0 —— 必须返回 None（页面显示「—」），
+        否则会被显示成 0%，看起来像全员缺勤。"""
+        s = self.at.daily_summary("2026-09-30")
+        self.assertEqual(s["expect"], 0)
+        self.assertIsNone(s["rate"])
+
+    def test_has_record_separates_absent_from_no_data(self):
+        """有无流水决定「缺勤」还是「无法判定」。
+
+        这条是整个模块可信度的关键：服务停机那天若判成全员缺勤，
+        汇报时无法解释，等于把报表作废。
+        """
+        self.f.register("张工", self._vec(0))
+        self.assertFalse(self.at.has_any_record("2026-09-30"))
+
+        # 只有访客记录也算「数据源活着」—— 说明服务在跑、摄像头在工作
+        self._seen("访客-1", "2026-09-30 09:00:00", is_temp=True, pid=None)
+        self.assertTrue(self.at.has_any_record("2026-09-30"))
+        self.assertTrue(self.at.daily_summary("2026-09-30")["has_record"])
+
+    def test_rows_sorted_absent_first(self):
+        """缺勤排前面：报表第一用途是找出没来的人。"""
+        for i, n in enumerate(("张工", "李工", "王工")):
+            self.f.register(n, self._vec(i))
+        self._seen("李工", "2026-09-30 09:00:00")
+
+        rows = self.at.daily_status("2026-09-30")
+        self.assertEqual(rows[0]["status"], "absent")
+        self.assertEqual(rows[-1]["status"], "present")
+
+    def test_multiple_records_count_once(self):
+        """同一天被识别 30 次仍只算 1 次打卡（page 展示次数用 seen_n）。"""
+        self.f.register("张工", self._vec(0))
+        for m in range(0, 30, 2):
+            self._seen("张工", f"2026-09-30 09:{m:02d}:00")
+        s = self.at.daily_summary("2026-09-30")
+        self.assertEqual(s["present"], 1)
+        self.assertEqual(self.at.daily_status("2026-09-30")[0]["seen_n"], 15)
+
+    # ---------- 区间台账 ----------
+    def test_range_covers_every_day_including_empty(self):
+        """区间里没有任何记录的日子也要出现在结果中（否则台账缺列）。"""
+        self.f.register("张工", self._vec(0))
+        self._seen("张工", "2026-09-28 09:00:00")
+
+        d = self.at.range_status("2026-09-27", "2026-09-30")
+        self.assertEqual(d["days"], ["2026-09-27", "2026-09-28", "2026-09-29", "2026-09-30"])
+        row = d["rows"][0]
+        self.assertEqual(len(row["days"]), 4)
+        self.assertEqual(row["present_n"], 1)
+        self.assertEqual(row["absent_n"], 3)
+        self.assertEqual(row["days"]["2026-09-28"]["status"], "present")
+        self.assertEqual(row["days"]["2026-09-27"]["status"], "absent")
+        self.assertAlmostEqual(row["rate"], 0.25, places=3)
+
+    def test_range_rejects_reversed_and_too_long(self):
+        self.f.register("张工", self._vec(0))
+        with self.assertRaises(ValueError):
+            self.at.range_status("2026-09-30", "2026-09-01")
+        with self.assertRaises(ValueError):
+            self.at.range_status("2026-01-01", "2026-12-31")
+
+    # ---------- 趋势 ----------
+    def test_trend_length_and_no_data_flag(self):
+        """空日期必须补点，且标记为「无数据」而非「缺勤」。"""
+        self.f.register("张工", self._vec(0))
+        items = self.at.trend(days=5)
+        self.assertEqual(len(items), 5)
+        for it in items:
+            self.assertIn("rate", it)
+            self.assertIn("day_status", it)
+        today = items[-1]
+        self.assertEqual(today["day_status"], "no_data")
+        self.assertEqual(today["absent"], 1)
+
+    def test_trend_marks_present_today(self):
+        self.f.register("张工", self._vec(0))
+        self.f.add_seen(1, "张工", False, 0.95)
+        items = self.at.trend(days=3)
+        self.assertEqual(items[-1]["present"], 1)
+        self.assertEqual(items[-1]["absent"], 0)
+        self.assertEqual(items[-1]["day_status"], "present")
+        self.assertAlmostEqual(items[-1]["rate"], 1.0, places=3)
+
+    # ---------- 异常输入 ----------
+    def test_daily_status_survives_no_persons(self):
+        """底库为空时不能抛异常，要返回空列表（页面显示引导文案）。"""
+        rows = self.at.daily_status("2026-09-30")
+        self.assertEqual(rows, [])
+        self.assertEqual(self.at.daily_summary("2026-09-30")["present"], 0)
+
+    def test_trend_clamps_days(self):
+        """天数越界要被夹住，不能因为传了 99999 就全表扫。"""
+        self.assertLessEqual(len(self.at.trend(days=0)), 1)
+        self.assertLessEqual(len(self.at.trend(days=100000)), 92)
+
+
 def main():
     argv = sys.argv[:]
     if "-v" in argv:
@@ -1473,6 +1721,7 @@ def main():
             TestPhoneFaceModes,
             TestEquipAttach,
             TestCameraDb,
+            TestAttendance,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)

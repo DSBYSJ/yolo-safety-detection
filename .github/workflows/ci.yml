@@ -46,7 +46,7 @@ jobs:
       - name: 导入校验（确保模块可加载）
         run: |
           cd webapp
-          python -c "import config, db, detector, imageio_cn, fontutil, camera, video_jobs, train_manager, app"
+          python -c "import config, db, detector, imageio_cn, fontutil, camera, video_jobs, train_manager, equip, camera_db, phone_face, attendance, app"
           echo '所有模块导入成功'
 
       - name: 离线单元测试
@@ -66,7 +66,7 @@ jobs:
           done
           echo "--- 页面可达性 ---"
           failed=0
-          for path in / /detect /camera /records /stats /train /eval /api/env /api/stats; do
+          for path in / /detect /camera /phone /faces /compliance /attendance /records /stats /train /eval /api/env /api/stats /api/attendance/day /api/attendance/trend; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:5000${path}")
             echo "  ${path} -> HTTP ${code}"
             case "$path" in

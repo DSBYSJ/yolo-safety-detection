@@ -747,3 +747,35 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .stat-card.bad { border-color: #fecaca; background: #fffafa; }
 .stat-card.bad .stat-val { color: var(--danger); }
 .tbl-empty { text-align: center; color: var(--muted); padding: 22px 8px; }
+
+/* ============================================================
+   人脸打卡
+   ============================================================ */
+
+/* 卡片头部挤了徽章 + 日期 + 按钮，窄屏要允许换行 */
+.card-head { flex-wrap: wrap; gap: 8px; }
+.card-head input[type="date"] { min-width: 150px; }
+
+.at-grid { margin-top: 4px; }
+.at-chart { width: 100%; height: 260px; }
+
+/* 「当日无数据」提示条。用警示色而不是错误色：
+   它不是故障，是「结果不可信」的前置条件没满足 */
+.at-warn {
+  margin-top: 14px; padding: 11px 14px; border-radius: 10px;
+  background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
+  font-size: 12.5px; line-height: 1.75;
+}
+.at-warn[hidden] { display: none; }
+.at-warn b { color: #78350f; }
+
+.at-note {
+  background: #f8fafc; border: 1px solid var(--line); border-radius: 12px;
+  padding: 13px 15px; margin: 0 0 16px; line-height: 1.85;
+}
+.at-note strong { color: var(--ink); }
+
+@media (max-width: 640px) {
+  .card-head input[type="date"] { flex: 1; }
+  .at-chart { height: 220px; }
+}

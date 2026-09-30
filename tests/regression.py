@@ -102,10 +102,52 @@ def http_code(base, path, timeout=20):
 # 测试项
 # --------------------------------------------------------------------------- #
 def test_pages(base):
-    print("\n【1】页面可达性（8 个）")
-    for p in ["/", "/detect", "/camera", "/phone", "/records", "/stats", "/train", "/eval"]:
+    print("\n【1】页面可达性（11 个）")
+    for p in ["/", "/detect", "/camera", "/phone", "/faces", "/compliance",
+              "/attendance", "/records", "/stats", "/train", "/eval"]:
         code = http_code(base, p)
         check(f"页面 {p}", code == 200, f"HTTP {code}")
+
+
+def test_attendance(base):
+    """人脸打卡接口：三态判定与参数校验。
+
+    这里只验「接口形状与口径」——具体的日期分组正确性由
+    tests/test_unit.py 的 TestAttendance（20 项）覆盖，
+    因为要构造历史日期流水，走 HTTP 反而更绕。
+    """
+    print("\n【9】人脸打卡接口")
+    d = get_json(base, "/api/attendance/day")
+    need = {"date", "rows", "summary"}
+    missing = need - set(d.keys())
+    check("/api/attendance/day 结构", d.get("ok") and not missing,
+          f"字段={sorted(d.keys())}" + (f" 缺少={missing}" if missing else ""))
+
+    s = d.get("summary") or {}
+    check("/api/attendance/day 汇总口径",
+          all(k in s for k in ("expect", "present", "absent", "rate", "has_record")),
+          f"应到={s.get('expect')} 打卡={s.get('present')} 缺勤={s.get('absent')} "
+          f"打卡率={s.get('rate')} has_record={s.get('has_record')}")
+
+    # 无记录的日子必须能区分「缺勤」与「无数据」
+    d2 = get_json(base, "/api/attendance/day?date=2020-01-01")
+    s2 = d2.get("summary") or {}
+    check("无数据日 has_record=False", s2.get("has_record") is False,
+          f"has_record={s2.get('has_record')} no_data={d2.get('no_data')}")
+
+    # 非法日期要 400，不能 500
+    try:
+        get_json(base, "/api/attendance/day?date=2026/09/30")
+        check("非法日期被拒", False, "应返回 400，实际未报错")
+    except urllib.error.HTTPError as e:
+        check("非法日期被拒", e.code == 400, f"HTTP {e.code}")
+    except Exception as e:
+        check("非法日期被拒", False, f"异常 {e}")
+
+    t = get_json(base, "/api/attendance/trend?days=7")
+    items = t.get("items") or []
+    check("/api/attendance/trend 补齐空日期", len(items) == 7,
+          f"返回 {len(items)} 个点")
 
 
 def test_env(base):
@@ -338,6 +380,7 @@ def main():
     test_records(base)
     test_stats(base)
     test_eval_metrics(base)
+    test_attendance(base)
 
     print("\n" + "=" * 68)
     passed = sum(1 for c, _, _ in _results if c)

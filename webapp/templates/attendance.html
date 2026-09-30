@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}人脸打卡 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}人脸打卡{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="card-head">
+    <h2 class="card-title">今日打卡</h2>
+    <span class="flex-sp"></span>
+    <span class="badge {{ 'info' if ready else 'danger' }}" id="atBadge">
+      {{ '模型就绪' if ready else '模型未就绪' }}
+    </span>
+    <input type="date" id="atDate" value="{{ today }}" class="sm-input">
+    <button class="btn ghost sm" id="btnAtReload">刷新</button>
+  </div>
+
+  <p class="hint">
+    判定规则：<strong>当日识别到该人员即显示「打卡」，当日未识别到即显示「缺勤」</strong>。
+    本轮刻意<strong>不考虑</strong>是否戴口罩、戴安全帽，也不区分迟到早退 ——
+    只回答「今天这个人有没有出现在镜头里」。
+  </p>
+
+  <div class="stat-grid at-grid">
+    <div class="stat-card">
+      <span class="stat-label">应到</span>
+      <span class="stat-val" id="atExpect">-</span>
+      <span class="stat-sub">底库已注册人员</span>
+    </div>
+    <div class="stat-card ok">
+      <span class="stat-label">打卡</span>
+      <span class="stat-val txt-green" id="atPresent">-</span>
+      <span class="stat-sub">当日有识别记录</span>
+    </div>
+    <div class="stat-card bad">
+      <span class="stat-label">缺勤</span>
+      <span class="stat-val" id="atAbsent">-</span>
+      <span class="stat-sub">当日无识别记录</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">打卡率</span>
+      <span class="stat-val" id="atRate">-</span>
+      <span class="stat-sub">打卡 / 应到</span>
+    </div>
+  </div>
+
+  <div class="at-warn" id="atNoData" hidden>
+    <b>当日没有任何识别记录。</b>
+    这种情况下<strong>无法判定出勤</strong>：可能是服务没开、摄像头没接，
+    也可能是当天确实没人到岗。请先确认数据源是否正常，再看下面的名单。
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2 class="card-title">当日名单</h2>
+    <span class="flex-sp"></span>
+    <span class="hint" id="atCount">-</span>
+  </div>
+  <div class="tbl-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>姓名</th><th>备注</th><th>打卡状态</th>
+          <th>首次识别</th><th>末次识别</th><th>识别次数</th><th>最高相似度</th>
+        </tr>
+      </thead>
+      <tbody id="atBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2 class="card-title">近 14 天趋势</h2>
+  </div>
+  <p class="hint">
+    折线是「当日打卡人数 / 应到人数」。<strong>灰色虚线的点是当日完全没有识别记录</strong> ——
+    那几天不能算缺勤，只能算没数据。
+  </p>
+  <div id="atChart" class="at-chart"></div>
+</div>
+
+<p class="muted-note at-note">
+  说明：本打卡结果仅依据人脸识别的出现情况，属<strong>辅助统计</strong>。
+  系统使用 2D 人脸比对，没有活体检测，拿着照片站在镜头前同样能被识别；
+  戴口罩时识别本身也不可靠。因此<strong>不可作为工资核算或纪律处分的唯一依据</strong>。
+  临时访客不参与打卡判定。
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const today0 = "{{ today }}";
+let chart = null;
+
+function pctOrDash(v) {
+  return (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
+}
+
+async function loadDay() {
+  const day = document.getElementById('atDate').value || today0;
+  const tb = document.getElementById('atBody');
+  tb.innerHTML = '<tr><td colspan="7" class="tbl-empty">加载中…</td></tr>';
+  let d;
+  try {
+    d = await (await fetch('/api/attendance/day?date=' + encodeURIComponent(day))).json();
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="7" class="tbl-empty">请求失败：' + esc(e + '') + '</td></tr>';
+    return;
+  }
+  if (!d.ok) {
+    tb.innerHTML = '<tr><td colspan="7" class="tbl-empty">' + esc(d.error || '读取失败') + '</td></tr>';
+    return;
+  }
+
+  const s = d.summary;
+  document.getElementById('atExpect').textContent = s.expect;
+  document.getElementById('atPresent').textContent = s.present;
+  document.getElementById('atAbsent').textContent = s.absent;
+  document.getElementById('atRate').textContent = pctOrDash(s.rate);
+  document.getElementById('atCount').textContent =
+    `${d.date} · 共 ${s.expect} 人，打卡 ${s.present} 人，缺勤 ${s.absent} 人`;
+
+  // 当日一条记录都没有时给出醒目提示：此时「缺勤」很可能是假象
+  document.getElementById('atNoData').hidden = !!s.has_record;
+
+  if (!d.rows.length) {
+    tb.innerHTML = '<tr><td colspan="7" class="tbl-empty">底库为空，请先到「人脸底库」录入人员</td></tr>';
+    return;
+  }
+  tb.innerHTML = d.rows.map(r => {
+    const badge = r.status === 'present'
+      ? '<span class="badge ok">打卡</span>'
+      : '<span class="badge bad">缺勤</span>';
+    return `<tr>
+      <td><b>${esc(r.person_name)}</b></td>
+      <td>${esc(r.note) || '-'}</td>
+      <td>${badge}</td>
+      <td>${r.first_hm || '-'}</td>
+      <td>${r.last_hm || '-'}</td>
+      <td>${r.seen_n || 0}</td>
+      <td>${r.best_score ? r.best_score.toFixed(3) : '-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadTrend() {
+  let d;
+  try {
+    d = await (await fetch('/api/attendance/trend?days=14')).json();
+  } catch (e) { return; }
+  if (!d.ok) return;
+
+  const el = document.getElementById('atChart');
+  if (typeof echarts === 'undefined') {
+    el.innerHTML = '<div class="tbl-empty">图表库未加载</div>';
+    return;
+  }
+  if (!chart) chart = echarts.init(el);
+
+  const items = d.items;
+  // 无数据的日子单独一类散点（灰色虚线），避免被读成「全员缺勤」
+  const nodata = items.map((it, i) => it.day_status === 'no_data' ? [i, it.present] : null)
+                      .filter(Boolean);
+
+  chart.setOption({
+    grid: { left: 40, right: 20, top: 30, bottom: 30 },
+    tooltip: {
+      trigger: 'axis',
+      formatter: p => {
+        const it = items[p[0].dataIndex];
+        return `${it.full_date}<br/>应到 ${it.expect} 人<br/>打卡 ${it.present} 人<br/>`
+             + `缺勤 ${it.absent} 人<br/>识别记录 ${it.records} 条`
+             + (it.day_status === 'no_data' ? '<br/><b>当日无任何识别记录（无数据）</b>' : '');
+      }
+    },
+    xAxis: { type: 'category', data: items.map(i => i.date), axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', minInterval: 1, axisLabel: { fontSize: 11 } },
+    series: [
+      {
+        name: '打卡人数', type: 'line', smooth: true, data: items.map(i => i.present),
+        itemStyle: { color: '#16a34a' }, areaStyle: { color: 'rgba(22,163,74,.08)' },
+        symbolSize: 6
+      },
+      {
+        name: '应到人数', type: 'line', data: items.map(i => i.expect),
+        itemStyle: { color: '#94a3b8' }, lineStyle: { type: 'dashed', width: 1 },
+        symbol: 'none'
+      },
+      {
+        name: '无数据', type: 'scatter', data: nodata,
+        itemStyle: { color: '#d97706' }, symbolSize: 11, z: 5
+      }
+    ],
+    legend: { top: 0, textStyle: { fontSize: 11 } }
+  });
+  chart.resize();
+}
+
+function esc(s) {
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+document.getElementById('btnAtReload').addEventListener('click', () => { loadDay(); loadTrend(); });
+document.getElementById('atDate').addEventListener('change', loadDay);
+window.addEventListener('resize', () => { if (chart) chart.resize(); });
+// 大屏常开时自动刷新，10 秒一次（只查汇总与当日名单，开销很小）
+setInterval(() => { if (!document.hidden) loadDay(); }, 10000);
+
+loadDay();
+loadTrend();
+</script>
+{% endblock %}

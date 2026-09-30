@@ -24,6 +24,7 @@ from flask import (
     url_for,
 )
 
+import attendance
 import camera
 import camera_db
 import config
@@ -168,6 +169,19 @@ def compliance_page():
     """合规统计：按「人」聚合的识别记录与合规情况"""
     return render_template(
         "compliance.html", page="compliance", ready=face_db.face_model_ready()
+    )
+
+
+@app.route("/attendance")
+def attendance_page():
+    """人脸打卡：只依据「当日是否识别到」判定打卡 / 缺勤"""
+    return render_template(
+        "attendance.html",
+        page="attendance",
+        ready=face_db.face_model_ready(),
+        today=time.strftime("%Y-%m-%d"),
+        gallery_size=face_db.count_persons(),
+        threshold=face_db.MATCH_THRESHOLD,
     )
 
 
@@ -835,6 +849,87 @@ def api_compliance_seen_clear():
     n = face_db.clear_seen()
     face_db.reset_temp_registry()
     return jsonify({"ok": True, "cleared": n})
+
+
+# ---------------------------------------------------------------- 人脸打卡 API
+#
+# 判定口径（本轮需求刻意收窄）：
+#     当日识别到该人员 → 打卡（present）
+#     当日未识别到     → 缺勤（absent）
+#     当日无任何流水   → 无法判定（no_data）
+# 不考虑戴口罩 / 安全帽，也不引入班次与迟到早退。
+# 第三条是必须的：服务没开、摄像头没接的日子若判成缺勤，
+# 会把全员冤枉一遍，报表立刻失去可信度。
+@app.get("/api/attendance/day")
+def api_attendance_day():
+    """某日全员打卡状态。默认查今天。"""
+    day = request.args.get("date") or time.strftime("%Y-%m-%d")
+    try:
+        day = attendance.validate_day(day)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    try:
+        rows = attendance.daily_status(day)
+        summary = attendance.daily_summary(day, rows=rows)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"核算失败: {e}"}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "date": day,
+            "model_ready": face_db.face_model_ready(),
+            "rows": rows,
+            "summary": summary,
+            "no_data": not summary.get("has_record"),
+        }
+    )
+
+
+@app.get("/api/attendance/range")
+def api_attendance_range():
+    """区间打卡台账。默认最近 7 天。"""
+    today = time.strftime("%Y-%m-%d")
+    try:
+        days = max(1, min(92, int(request.args.get("days", 7))))
+    except (TypeError, ValueError):
+        days = 7
+    end = request.args.get("end") or today
+    try:
+        end = attendance.validate_day(end)
+        t = time.mktime(time.strptime(end, "%Y-%m-%d"))
+        start = attendance.validate_day(
+            time.strftime("%Y-%m-%d", time.localtime(t - (days - 1) * 86400))
+        )
+        data = attendance.range_status(start, end)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"核算失败: {e}"}), 500
+    return jsonify({"ok": True, "days_n": days, **data})
+
+
+@app.get("/api/attendance/trend")
+def api_attendance_trend():
+    """近 N 天趋势序列（应到 / 打卡 / 缺勤）。"""
+    try:
+        days = max(1, min(92, int(request.args.get("days", 14))))
+    except (TypeError, ValueError):
+        days = 14
+    try:
+        return jsonify({"ok": True, "days_n": days, "items": attendance.trend(days)})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"核算失败: {e}"}), 500
+
+
+@app.get("/api/attendance/status")
+def api_attendance_status():
+    """轻量状态查询：给手机端/大屏轮询用，只回今日汇总。"""
+    day = time.strftime("%Y-%m-%d")
+    try:
+        summary = attendance.daily_summary(day)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"核算失败: {e}"}), 500
+    return jsonify({"ok": True, "summary": summary, "model_ready": face_db.face_model_ready()})
 
 
 # ---------------------------------------------------------------- 训练/评估 API
