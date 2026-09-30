@@ -54,7 +54,7 @@
     │   └── static/                # 样式 / ECharts / 检测结果图
     ├── scripts/
     │   ├── make_demo_video.py     # 生成演示视频（用于视频检测测试）
-    │   └── list_cameras.py        # 枚举本机摄像头索引（接入手机虚拟摄像头时用）
+    │   └── list_cameras.py        # 枚举本机设备索引 / 探测网络流地址（接入手机摄像头时用）
     ├── tests/
     │   ├── test_unit.py           # 离线单元测试（35 项，无需服务/GPU）
     │   └── regression.py          # 端到端回归测试（21 项，需服务运行中）
@@ -127,23 +127,28 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CAMERA_INDEX` | `0` | 摄像头设备索引。接入手机虚拟摄像头时通常要改成 1 或 2 |
-| `CAMERA_FRAME_WIDTH` | `1280` | 摄像头采集宽度 |
-| `CAMERA_FRAME_HEIGHT` | `720` | 摄像头采集高度 |
+| `CAMERA_SOURCE` | 空 | 网络视频流地址（RTSP/HTTP/RTMP）。设置后**优先于** `CAMERA_INDEX` |
+| `CAMERA_INDEX` | `0` | 本地摄像头设备索引。接入手机虚拟摄像头时通常要改成 1 或 2 |
+| `CAMERA_FRAME_WIDTH` | `1280` | 本地摄像头采集宽度（对网络流无效，流分辨率由推流端决定） |
+| `CAMERA_FRAME_HEIGHT` | `720` | 本地摄像头采集高度（同上） |
+| `CAMERA_STREAM_TIMEOUT` | `8` | 打开网络流时的超时秒数，失败后自动重试 |
 | `SECRET_KEY` | 开发默认值 | Flask 会话密钥，生产环境务必注入 |
 
     # 把摄像头切到索引 1 的设备
     CAMERA_INDEX=1 python webapp/app.py
+    # 改用手机推的 RTSP 流
+    CAMERA_SOURCE="rtsp://192.168.1.100:554/h264" python webapp/app.py
     # Windows CMD
     set CAMERA_INDEX=1 && python webapp/app.py
 
 ## 六之三、使用手机摄像头做实时监测
 
 手机的摄像头**不能直接被 OpenCV 读取** —— `cv2.VideoCapture` 只认系统里注册的
-视频设备（Windows 走 DirectShow，Linux 走 V4L2）。所以需要先用工具把手机
-「伪装」成一个虚拟摄像头，之后本项目**无需改动任何代码**，只需指定设备索引。
+视频设备（Windows 走 DirectShow，Linux 走 V4L2），或一个明确给出的流地址。
+因此有两条路：把手机**伪装成虚拟摄像头**（方案 A/B，改 `CAMERA_INDEX`），
+或**直接读取手机推的视频流**（方案 C，改 `CAMERA_SOURCE`）。两者都无需改动源码。
 
-### 方案 A：DroidCam / Iriun Webcam（推荐，零改码）
+### 方案 A：DroidCam / Iriun Webcam（推荐，最省事）
 
 1. 手机安装 **DroidCam**（或 Iriun Webcam），电脑安装对应客户端；
 2. 二者连接（Wi-Fi 填手机显示的 IP:端口；或 USB 走 ADB，延迟更低）；
@@ -164,38 +169,51 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 较新机型在「开发者选项」中开启 USB 摄像头类功能后，插上 USB 即被系统识别为
 标准摄像头，无需第三方 App。同样用 `list_cameras.py` 确认索引即可。
 
-### 方案 C：IP Webcam + RTSP（需改代码，支持多机）
+### 方案 C：IP Webcam 等网络流（原生支持，无需装虚拟摄像头驱动）
 
-手机装 IP Webcam 后提供 RTSP/HTTP 流地址。此方案要把 `camera.py` 中的
-`cv2.VideoCapture(config.CAMERA_INDEX)` 改为传入流地址字符串：
+手机装 **IP Webcam**（或任意提供 RTSP 的网络摄像机）后，会得到一个流地址。
+直接用 `CAMERA_SOURCE` 指定即可：
 
-    cap = cv2.VideoCapture("http://192.168.1.100:8080/video")
+1. 先在手机上启动服务，记下地址（IP Webcam 默认形如
+   `http://手机IP:8080/video`，RTSP 形如 `rtsp://手机IP:8080/h264_pcm.sdp`）；
+2. 用脚本探测该地址是否可达（会打印分辨率并保存一帧实拍图）：
 
-好处是可同时接入多台手机，代价是需自行处理 RTSP 断流重连。
+       python scripts/list_cameras.py --url "http://192.168.1.100:8080/video" --save
+
+3. 用探测到的地址启动：
+
+       CAMERA_SOURCE="http://192.168.1.100:8080/video" python webapp/app.py
+
+相比方案 A 的好处：**不用在电脑装虚拟摄像头驱动**，且天然支持接入网络摄像机。
+代码侧已处理断流重连 —— 网络流允许连续丢 5 帧才判定断线重连（本地设备是 2 帧），
+避免一次网络抖动就重建连接导致画面闪烁。
 
 ### 常见问题
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| 画面提示「未检测到摄像头（索引 N）」 | 索引不对。运行 `scripts/list_cameras.py` 确认正确索引 |
-| 改了 `CAMERA_INDEX` 但没生效 | 抓帧线程已启动时不会重新打开设备，**需重启服务** |
+| 画面提示「未检测到摄像头（设备索引 N）」 | 索引不对。运行 `scripts/list_cameras.py` 确认正确索引 |
+| 画面提示「无法连接视频流 + 地址」 | 地址不通。确认手机与电脑同一局域网、App 已启动、防火墙未拦截 |
+| 改了 `CAMERA_INDEX` / `CAMERA_SOURCE` 但没生效 | 抓帧线程已启动时不会重新打开设备，**需重启服务** |
 | 虚拟摄像头连接成功但画面黑屏 | 先确认客户端预览正常；再试 `list_cameras.py --backend dshow` |
 | 手机掉线后画面不恢复 | 抓帧线程每 5 秒自动重连，确认手机端 App 仍在运行、IP 未变 |
+| 网络流延迟明显高于虚拟摄像头 | 属正常现象。RTSP 比 MJPEG(HTTP) 延迟低；优先用 5GHz Wi-Fi 或网线 |
 
 ## 六之二、功能测试
 
 测试分两层：**离线单元测试**不依赖服务与 GPU，可随时运行；**端到端回归测试**需要服务已启动。
 
-### 1. 离线单元测试（35 项）
+### 1. 离线单元测试（46 项）
 
     python tests/test_unit.py
 
 覆盖 `imageio_cn`（含中文路径读写）、`db`（增删查与统计聚合）、
 `detector` 纯函数（kinds 过滤、类别计数映射）、`fontutil`（跨平台字体）、
-`config`（模型类别与 `data.yaml` 一致性校验），共 35 项：
+`config`（模型类别与 `data.yaml` 一致性、环境变量解析）、
+`camera`（取流来源解析），共 46 项：
 
     ====================================================================
-    单元测试结果: 35/35 通过
+    单元测试结果: 46/46 通过
     ====================================================================
 
 ### 2. 端到端回归测试（21 项）

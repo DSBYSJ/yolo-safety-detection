@@ -27,6 +27,40 @@ _state = {
 }
 
 
+def resolve_source():
+    """解析取流目标，返回 (传给 VideoCapture 的源, 是否网络流, 展示名)。
+
+    优先使用 CAMERA_SOURCE（RTSP/HTTP/RTMP 网络流），否则回退本地设备索引。
+    抽成函数便于单测覆盖，也避免 _worker 里堆判断分支。
+    """
+    src = (config.CAMERA_SOURCE or "").strip()
+    if src:
+        return src, True, src
+    return config.CAMERA_INDEX, False, f"设备索引 {config.CAMERA_INDEX}"
+
+
+def _open_capture():
+    """按配置打开视频源。网络流需额外设置超时，避免长时间阻塞。"""
+    source, is_stream, _ = resolve_source()
+    if is_stream:
+        # FFMPEG 后端读网络流更稳；超时用微秒，避免无人响应时无限等待
+        params = [
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, config.CAMERA_STREAM_TIMEOUT * 1000,
+            cv2.CAP_PROP_READ_TIMEOUT_MSEC, config.CAMERA_STREAM_TIMEOUT * 1000,
+        ]
+        try:
+            return cv2.VideoCapture(source, cv2.CAP_FFMPEG, params)
+        except (cv2.error, TypeError):
+            # 老版本 OpenCV 不接受 params 参数，退回普通调用
+            return cv2.VideoCapture(source)
+
+    cap = cv2.VideoCapture(source)
+    # 分辨率只对本地设备生效；网络流由推流端决定，强行设置可能失败
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_FRAME_HEIGHT)
+    return cap
+
+
 def _placeholder(text: str, size: int = 26) -> np.ndarray:
     """生成占位画面。text 支持多行（用 \\n 分隔），整体居中绘制。"""
     img = np.full((480, 720, 3), 28, dtype=np.uint8)
@@ -79,30 +113,44 @@ def _save_record(counts: dict, annotated: np.ndarray, kind: str, tms: float) -> 
 def _worker() -> None:
     cap = None
     last_record = 0.0
+    fails = 0   # 连续读帧失败次数，用于区分偶发丢帧与真的断流
+    is_stream = False
     while not _stop:
         # 打开/重试摄像头
         if cap is None or not cap.isOpened():
-            cap = cv2.VideoCapture(config.CAMERA_INDEX)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_FRAME_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_FRAME_HEIGHT)
+            _, is_stream, shown = resolve_source()
+            cap = _open_capture()
             if not cap.isOpened():
-                _publish(
-                    _placeholder(
-                        f"未检测到摄像头（索引 {config.CAMERA_INDEX}）\n"
-                        f"请运行 scripts/list_cameras.py 查看可用设备",
-                        size=22,
-                    ),
-                    ok=False, counts={},
-                )
+                if is_stream:
+                    hint = (
+                        f"无法连接视频流\n{shown}\n"
+                        f"请确认手机与电脑在同一局域网、App 已开启服务"
+                    )
+                else:
+                    hint = (
+                        f"未检测到摄像头（{shown}）\n"
+                        f"请运行 scripts/list_cameras.py 查看可用设备"
+                    )
+                _publish(_placeholder(hint, size=22), ok=False, counts={})
+                cap.release()
                 time.sleep(5.0)
                 continue
-            _publish(_placeholder("摄像头已连接，正在启动检测..."), ok=True)
+            _publish(_placeholder("视频源已连接，正在启动检测..."), ok=True)
+            fails = 0
 
         ok, frame = cap.read()
         if not ok:
+            fails += 1
+            # 网络流偶发丢帧很常见，连续失败若干次才判定断流并重连，
+            # 避免一次抖动就重建连接造成画面反复闪烁
+            if fails < (5 if is_stream else 2):
+                time.sleep(0.05)
+                continue
             cap.release()
             cap = None
+            fails = 0
             continue
+        fails = 0
 
         with _lock:
             kind = _state["kind"] or "helmet"

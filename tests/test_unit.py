@@ -7,6 +7,7 @@
     - detector：纯函数（kinds 过滤、类别计数映射）
     - fontutil：跨平台字体加载
     - config：模型定义自洽性（类别名与 data.yaml 一致）
+    - camera：取流来源解析（网络流优先于本地设备索引）
 
 用法：
     python tests/test_unit.py
@@ -332,7 +333,93 @@ class TestConfig(unittest.TestCase):
                 self.assertEqual(config.CAMERA_INDEX, 0, f"输入 {bad!r} 时未回退默认值")
             finally:
                 os.environ.pop("CAMERA_INDEX", None)
-        importlib.reload(config)
+                importlib.reload(config)
+
+    def test_camera_source_defaults_to_empty(self):
+        """未设置时 CAMERA_SOURCE 应为空串，表示改用本地设备索引。"""
+        import config
+
+        self.assertEqual(config.CAMERA_SOURCE, "")
+
+    def test_env_str_reads_value(self):
+        import importlib
+
+        import config
+
+        url = "rtsp://192.168.1.9:554/h264"
+        os.environ["CAMERA_SOURCE"] = url
+        try:
+            importlib.reload(config)
+            self.assertEqual(config.CAMERA_SOURCE, url)
+        finally:
+            os.environ.pop("CAMERA_SOURCE", None)
+            importlib.reload(config)
+
+    def test_env_str_strips_whitespace_and_blank(self):
+        """空白串必须视为未设置，否则会生成一个打不开的地址。"""
+        import importlib
+
+        import config
+
+        os.environ["CAMERA_SOURCE"] = "   "
+        try:
+            importlib.reload(config)
+            self.assertEqual(config.CAMERA_SOURCE, "")
+        finally:
+            os.environ.pop("CAMERA_SOURCE", None)
+            importlib.reload(config)
+
+    def test_stream_timeout_positive(self):
+        import config
+
+        self.assertGreater(config.CAMERA_STREAM_TIMEOUT, 0)
+
+
+class TestCameraSource(unittest.TestCase):
+    """camera.resolve_source：网络流优先于本地索引"""
+
+    def setUp(self):
+        import camera
+        import config
+
+        self.camera = camera
+        self.config = config
+
+    def tearDown(self):
+        self.config.CAMERA_SOURCE = ""
+        self.config.CAMERA_INDEX = 0
+
+    def test_falls_back_to_index_when_no_source(self):
+        self.config.CAMERA_SOURCE = ""
+        self.config.CAMERA_INDEX = 3
+        source, is_stream, shown = self.camera.resolve_source()
+        self.assertEqual(source, 3)
+        self.assertFalse(is_stream)
+        self.assertIn("3", shown)
+
+    def test_url_source_takes_priority(self):
+        self.config.CAMERA_SOURCE = "http://192.168.1.7:8080/video"
+        self.config.CAMERA_INDEX = 1
+        source, is_stream, _ = self.camera.resolve_source()
+        self.assertEqual(source, "http://192.168.1.7:8080/video")
+        self.assertTrue(is_stream, "设置了 CAMERA_SOURCE 时应判定为网络流")
+
+    def test_blank_source_ignored(self):
+        """纯空白不该被当成有效地址。"""
+        self.config.CAMERA_SOURCE = "   "
+        self.config.CAMERA_INDEX = 2
+        source, is_stream, _ = self.camera.resolve_source()
+        self.assertEqual(source, 2)
+        self.assertFalse(is_stream)
+
+    def test_index_zero_is_not_lost(self):
+        """索引 0 是合法设备，不能被 `or` 之类的写法误判为假值。"""
+        self.config.CAMERA_SOURCE = ""
+        self.config.CAMERA_INDEX = 0
+        source, is_stream, shown = self.camera.resolve_source()
+        self.assertEqual(source, 0)
+        self.assertFalse(is_stream)
+        self.assertIn("0", shown)
 
 
 def main():
@@ -352,6 +439,7 @@ def main():
             TestDetectorPure,
             TestFontutil,
             TestConfig,
+            TestCameraSource,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)

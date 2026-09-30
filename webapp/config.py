@@ -21,6 +21,14 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_str(name: str, default: str = "") -> str:
+    """读取字符串环境变量，空串视为未设置。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip()
+
+
 WEBAPP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = WEBAPP_DIR.parent
 
@@ -58,12 +66,25 @@ ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv"}
 MAX_CONTENT_LENGTH = 300 * 1024 * 1024  # 单文件上传上限 300MB
 
 # 摄像头实时检测
-# CAMERA_INDEX 为 OpenCV VideoCapture 的设备索引（整数）：
-#   0 = 通常是笔记本内置摄像头
-#   1/2 = 外接 USB 摄像头，或 DroidCam / Iriun 等虚拟摄像头
-# 不确定时先运行 `python scripts/list_cameras.py` 枚举本机设备。
-# 可用环境变量覆盖：CAMERA_INDEX=1 python webapp/app.py
+# 取流地址解析优先级：CAMERA_SOURCE（网络流）> CAMERA_INDEX（本地设备索引）
+#
+# 方式一：本地摄像头 / 虚拟摄像头（DroidCam、Iriun 等），用整数索引
+#   CAMERA_INDEX = 0 通常是笔记本内置摄像头
+#   CAMERA_INDEX = 1/2 是外接 USB 摄像头或虚拟摄像头
+#   不确定时先运行 `python scripts/list_cameras.py` 枚举本机设备。
+#
+# 方式二：网络视频流（手机 App「IP Webcam」、网络摄像机、RTSP 摄像头等）
+#   CAMERA_SOURCE=rtsp://user:pass@192.168.1.100:554/h264
+#   CAMERA_SOURCE=http://192.168.1.100:8080/video
+#   注意：设了 CAMERA_SOURCE 后 CAMERA_INDEX 与分辨率设置会被忽略，
+#   因为网络流的分辨率由推流端决定。
 CAMERA_INDEX = _env_int("CAMERA_INDEX", 0)
 CAMERA_FRAME_WIDTH = _env_int("CAMERA_FRAME_WIDTH", 1280)
 CAMERA_FRAME_HEIGHT = _env_int("CAMERA_FRAME_HEIGHT", 720)
 CAMERA_RECORD_INTERVAL = 5.0  # 有目标时的最小落库间隔（秒），防止记录爆炸
+
+# 网络流地址（RTSP / HTTP / RTMP）。留空则使用本地摄像头索引。
+CAMERA_SOURCE = _env_str("CAMERA_SOURCE", "")
+
+# 打开网络流时的超时（秒）。无人响应时不必一直等，便于失败后自动重试。
+CAMERA_STREAM_TIMEOUT = _env_int("CAMERA_STREAM_TIMEOUT", 8)
