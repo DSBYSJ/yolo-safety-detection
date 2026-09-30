@@ -39,10 +39,25 @@ RESULT_DIR = WEBAPP_DIR / "static" / "results"
 TRAIN_LOG_DIR = WEBAPP_DIR / "train_logs"
 for _d in (UPLOAD_DIR, RESULT_DIR, TRAIN_LOG_DIR):
     _d.mkdir(parents=True, exist_ok=True)
-
 MODEL_DIR = PROJECT_ROOT / "models"
 RUNS_DIR = PROJECT_ROOT / "runs"
 PRETRAINED_DIR = PROJECT_ROOT / "pretrained"
+
+# ------------------------------------------------------------------ 人脸识别
+# 底库特征提取用 InsightFace 的 buffalo_l 模型包（人脸检测 + 512 维特征）。
+# 目录结构必须是 <FACE_MODEL_ROOT>/models/<name>/，这是 insightface 的约定：
+#   models/face/
+#     └── models/
+#         └── buffalo_l/
+#             ├── det_10g.onnx     人脸检测（16MB）
+#             ├── w600k_r50.onnx   特征提取（170MB，认人的核心）
+#             └── 2d106det.onnx    关键点（可选，用于对齐）
+#
+# ⚠️ 国内直连 github / huggingface 下载模型会超时，模型已预置在仓库目录内。
+#    若换成新机器部署，需先把上述文件放到该目录，否则识别功能会明确报错。
+FACE_MODEL_ROOT = MODEL_DIR / "face"
+
+FACE_THUMB_DIR = WEBAPP_DIR / "static" / "faces"
 
 # 两类检测模型与类别定义（类别 id 与 datasets/*/data.yaml 保持一致）
 MODELS = {
@@ -92,3 +107,9 @@ CAMERA_SOURCE = _env_str("CAMERA_SOURCE", "")
 
 # 打开网络流时的超时（秒）。无人响应时不必一直等，便于失败后自动重试。
 CAMERA_STREAM_TIMEOUT = _env_int("CAMERA_STREAM_TIMEOUT", 8)
+
+# 摄像头实时人脸识别的执行间隔（秒）。
+# 人脸识别走 CPU，单次约 200-400ms，若逐帧执行会把抓帧循环拖成幻灯片
+# （安全帽/口罩检测的 fps 会从 100+ 掉到个位数）。
+# 按间隔执行可让识别结果稳定跟随，中间帧沿用上次结果，观感是「名字挂着」。
+FACE_INTERVAL = float(os.environ.get("FACE_INTERVAL", "2.0") or 2.0)

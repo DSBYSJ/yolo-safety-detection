@@ -28,6 +28,7 @@ import camera
 import config
 import db
 import detector
+import face_db
 import imageio_cn
 import train_manager
 import video_jobs
@@ -39,6 +40,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-only-helmet-mask-detection")
 app.config["MAX_CONTENT_LENGTH"] = config.MAX_CONTENT_LENGTH
 
 db.init_db()
+face_db.init_db()
 
 PAGE_SIZE = 10
 
@@ -143,6 +145,25 @@ def records_page():
 @app.route("/stats")
 def stats_page():
     return render_template("stats.html", page="stats")
+
+
+@app.route("/faces")
+def faces_page():
+    """人脸底库：注册与查看已录入人员"""
+    return render_template(
+        "faces.html",
+        page="faces",
+        ready=face_db.face_model_ready(),
+        threshold=face_db.MATCH_THRESHOLD,
+    )
+
+
+@app.route("/compliance")
+def compliance_page():
+    """合规统计：按「人」聚合的识别记录与合规情况"""
+    return render_template(
+        "compliance.html", page="compliance", ready=face_db.face_model_ready()
+    )
 
 
 @app.route("/train")
@@ -253,6 +274,17 @@ def api_camera_kind():
     kind = request.json.get("kind", "helmet")
     camera.set_kind(kind)
     return jsonify({"ok": True})
+
+
+@app.post("/api/camera/face")
+def api_camera_face():
+    """开关摄像头实时人脸识别。"""
+    body = request.get_json(force=True, silent=True) or {}
+    on = bool(body.get("on"))
+    if on and not face_db.face_model_ready():
+        return jsonify({"ok": False, "error": "人脸模型未就绪，无法开启识别"}), 400
+    camera.set_face(on)
+    return jsonify({"ok": True, "face": on})
 
 
 @app.get("/api/camera/state")
@@ -425,6 +457,198 @@ def api_stats():
             "conf": db.stats_conf(),
         }
     )
+
+
+# ---------------------------------------------------------------- 人脸底库 API
+@app.get("/api/faces/status")
+def api_faces_status():
+    """人脸模块状态：模型是否就绪、底库人数"""
+    return jsonify(
+        {
+            "ok": True,
+            "model_ready": face_db.face_model_ready(),
+            "threshold": face_db.MATCH_THRESHOLD,
+            "gallery_size": face_db.count_persons() if face_db.face_model_ready() else 0,
+        }
+    )
+
+
+@app.get("/api/faces/list")
+def api_faces_list():
+    """已注册人员列表（不含特征向量，向量体积大且毫无展示价值）"""
+    try:
+        persons = face_db.list_persons()
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"读取底库失败: {e}"}), 500
+    return jsonify({"ok": True, "persons": persons})
+
+
+@app.post("/api/faces/register")
+def api_faces_register():
+    """提交人脸照片并命名此人。
+
+    表单：file（照片）、name（姓名）、note（备注，可选）
+    """
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "请选择一张人脸照片"}), 400
+    ext = Path(f.filename).suffix.lower()
+    if ext not in config.ALLOWED_IMG_EXT:
+        return jsonify({"ok": False, "error": f"不支持的图片格式: {ext}"}), 400
+
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "请填写姓名"}), 400
+    note = (request.form.get("note") or "").strip()
+
+    in_name = _rand_name(ext)
+    in_path = config.UPLOAD_DIR / in_name
+    f.save(str(in_path))
+
+    img = imageio_cn.imread(in_path)
+    if img is None:
+        return jsonify({"ok": False, "error": "图片解析失败，请确认文件未损坏"}), 400
+
+    try:
+        emb = face_db.extract_single(img)
+    except face_db.FaceModelMissingError as e:
+        return jsonify({"ok": False, "error": str(e)}), 503
+    except face_db.NoFaceFound as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    # 存一份缩略图便于底库里辨认，避免直接引用用户上传的大图
+    thumb_rel = ""
+    try:
+        thumb_name = f"face_{uuid.uuid4().hex[:10]}.jpg"
+        scale = 240.0 / max(img.shape[:2])
+        if scale < 1:
+            thumb = cv2.resize(
+                img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA
+            )
+        else:
+            thumb = img
+        if imageio_cn.imwrite(config.FACE_THUMB_DIR / thumb_name, thumb):
+            thumb_rel = f"faces/{thumb_name}"
+    except Exception:  # noqa: BLE001
+        thumb_rel = ""          # 缩略图存不下来不该阻止注册
+
+    try:
+        pid = face_db.register(name, emb, note=note, thumb=thumb_rel)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    return jsonify({"ok": True, "id": pid, "name": name, "thumb": thumb_rel})
+
+
+@app.post("/api/faces/delete")
+def api_faces_delete():
+    body = request.get_json(force=True, silent=True) or {}
+    ids = body.get("ids") or []
+    ids = [int(i) for i in ids if str(i).isdigit()]
+    if not ids:
+        return jsonify({"ok": False, "error": "请选择要删除的人员"}), 400
+    for i in ids:
+        face_db.delete_person(i)
+    return jsonify({"ok": True, "deleted": len(ids)})
+
+
+@app.post("/api/faces/identify")
+def api_faces_identify():
+    """上传一张照片，识别是谁。用于底库自检与调试。"""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "请选择一张照片"}), 400
+    ext = Path(f.filename).suffix.lower()
+    if ext not in config.ALLOWED_IMG_EXT:
+        return jsonify({"ok": False, "error": f"不支持的图片格式: {ext}"}), 400
+
+    in_name = _rand_name(ext)
+    in_path = config.UPLOAD_DIR / in_name
+    f.save(str(in_path))
+    img = imageio_cn.imread(in_path)
+    if img is None:
+        return jsonify({"ok": False, "error": "图片解析失败"}), 400
+
+    try:
+        faces = face_db.extract_faces(img)
+    except face_db.FaceModelMissingError as e:
+        return jsonify({"ok": False, "error": str(e)}), 503
+
+    if not faces:
+        return jsonify({"ok": False, "error": "未检测到人脸"}), 400
+
+    results = []
+    for fc in faces:
+        pid, nm, score, is_temp = face_db.identify(fc["embedding"])
+        results.append(
+            {
+                "bbox": [round(v, 1) for v in fc["bbox"]],
+                "person_id": pid,
+                "name": nm,
+                "score": score,
+                "is_temp": is_temp,
+            }
+        )
+    return jsonify(
+        {"ok": True, "count": len(results), "faces": results, "threshold": face_db.MATCH_THRESHOLD}
+    )
+
+
+# ---------------------------------------------------------------- 合规统计 API
+@app.get("/api/compliance")
+def api_compliance():
+    """合规统计：按人聚合的识别情况。
+
+    注意：安全帽与口罩是两套独立模型，这里严格分开统计、互不交叉，
+    与「两项分别统计、不算总分」的需求一致。
+    """
+    return jsonify(
+        {
+            "ok": True,
+            "model_ready": face_db.face_model_ready(),
+            "seen_summary": face_db.stats_seen_summary(),
+            "seen_daily": face_db.stats_seen_daily(14),
+            "persons": face_db.stats_persons(50),
+            "detect_summary": db.stats_summary(),
+            "detect_classes": db.stats_classes(),
+        }
+    )
+
+
+@app.get("/api/compliance/seen")
+def api_compliance_seen():
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    try:
+        size = min(100, max(1, int(request.args.get("size", PAGE_SIZE))))
+    except ValueError:
+        size = PAGE_SIZE
+    person = request.args.get("person") or None
+    only_temp = request.args.get("only_temp")
+    only_temp = None if only_temp in (None, "") else (only_temp == "1")
+
+    rows, total = face_db.query_seen(page=page, size=size, person=person, only_temp=only_temp)
+    return jsonify({"ok": True, "items": rows, "total": total, "page": page, "size": size})
+
+
+@app.post("/api/compliance/seen/delete")
+def api_compliance_seen_delete():
+    body = request.get_json(force=True, silent=True) or {}
+    ids = body.get("ids") or []
+    ids = [int(i) for i in ids if str(i).isdigit()]
+    if not ids:
+        return jsonify({"ok": False, "error": "请选择要删除的记录"}), 400
+    face_db.delete_seen(ids)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/compliance/seen/clear")
+def api_compliance_seen_clear():
+    n = face_db.clear_seen()
+    face_db.reset_temp_registry()
+    return jsonify({"ok": True, "cleared": n})
 
 
 # ---------------------------------------------------------------- 训练/评估 API

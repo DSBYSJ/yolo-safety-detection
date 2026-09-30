@@ -50,3 +50,6 @@ Thumbs.db
 webapp/data.db-shm
 webapp/data.db-wal
 webapp/data.db-journal
+
+# 人脸识别模型（188MB，超出 GitHub 单文件限制，按 README「六之五」自行下载）
+models/face/

@@ -579,3 +579,78 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .phone-bar .btn.wide { grid-column: 1 / -1; }
   .phone-stage { border-radius: 10px; }
 }
+
+/* ============================================================
+   人脸底库 & 合规统计
+   ============================================================ */
+
+/* ---------- 合规统计：卡片组 ---------- */
+.stat-grid .stat-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 16px 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 4px;
+  border-left: 3px solid var(--accent);
+}
+.stat-grid .stat-card.ok { border-left-color: var(--ok); }
+.stat-grid .stat-card.warn { border-left-color: var(--warn); }
+.stat-label { font-size: 12.5px; color: var(--muted); }
+.stat-val { font-size: 28px; font-weight: 700; line-height: 1.15; color: var(--ink); }
+.stat-sub { font-size: 12px; color: var(--muted); }
+.stat-sub i { font-style: normal; font-weight: 600; color: var(--ink); }
+
+.chk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.chk-grid .card { margin-bottom: 0; }
+
+.two-num { display: flex; gap: 12px; }
+.two-num > div {
+  flex: 1; background: #f8fafc; border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px 12px; text-align: center; display: flex; flex-direction: column; gap: 4px;
+}
+.two-num .num { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.two-num .num.ok { color: var(--ok); }
+.two-num .num.bad { color: var(--danger); }
+.two-num span { font-size: 12.5px; color: var(--muted); }
+
+.sm-input { min-width: 160px; }
+
+/* ---------- 人脸底库：注册区 ---------- */
+.face-reg { display: grid; grid-template-columns: 300px 1fr; gap: 22px; align-items: start; }
+
+.face-drop {
+  position: relative; border: 1.5px dashed #cbd5e1; border-radius: 12px;
+  background: #f8fafc; min-height: 220px; display: flex; align-items: center;
+  justify-content: center; cursor: pointer; overflow: hidden; transition: border-color .15s, background .15s;
+}
+.face-drop:hover, .face-drop.over { border-color: var(--accent); background: #f2f7ff; }
+.face-drop-inner { display: flex; flex-direction: column; align-items: center; gap: 7px; color: var(--muted); text-align: center; padding: 20px; }
+.face-drop-inner b { font-size: 13.5px; color: var(--ink); font-weight: 500; }
+.face-drop-inner span { font-size: 12px; }
+.face-preview { width: 100%; height: 100%; max-height: 300px; object-fit: contain; display: block; background: #0f172a; }
+
+.face-form { display: flex; flex-direction: column; gap: 6px; }
+.face-form label { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.face-form label i { font-style: normal; color: var(--danger); }
+.face-form input {
+  padding: 9px 12px; border: 1px solid #d7dde7; border-radius: 8px;
+  font-size: 13.5px; background: #fff; color: var(--ink); outline: none;
+}
+.face-form input:focus { border-color: var(--accent); }
+.face-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+
+.face-result { margin-top: 14px; font-size: 13px; line-height: 1.75; color: var(--muted); min-height: 20px; }
+.face-result.ok { color: var(--ok); }
+.face-result.err { color: var(--danger); }
+.face-result .badge { margin-right: 6px; }
+
+.face-thumb { width: 46px; height: 46px; border-radius: 50%; object-fit: cover; }
+.badge.warn { background: #fffbeb; color: var(--warn); border-color: #fde68a; }
+.badge.danger { background: #fef2f2; color: var(--danger); border-color: #fecaca; }
+
+.hint { font-size: 13px; color: var(--muted); line-height: 1.8; margin-bottom: 14px; }
+.hint strong { color: var(--ink); font-weight: 600; }
+
+@media (max-width: 900px) {
+  .face-reg { grid-template-columns: 1fr; }
+  .chk-grid { grid-template-columns: 1fr; }
+  .stat-grid .stat-card { padding: 13px 14px; }
+  .stat-val { font-size: 23px; }
+}

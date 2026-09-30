@@ -16,6 +16,13 @@ pillow>=10.0
 # 数据集下载（可选，用于从 HuggingFace 镜像拉取公开数据集）
 huggingface_hub>=0.23
 
+# 人脸识别（可选模块，不装则「人脸底库」「合规统计」页会提示模型未就绪）
+# insightface 2.0 起提供纯 Python wheel，Windows 下无需编译 C++ 扩展；
+# onnxruntime 是它的推理后端，固定用 CPU（不与 YOLO 抢显存）。
+# ⚠️ 还需另外放置 buffalo_l 模型文件，见 README「六之五」。
+insightface>=2.0
+onnxruntime>=1.18
+
 # ============================================================
 # GPU 训练请单独安装 CUDA 版 PyTorch（按本机 CUDA 版本选择）：
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124

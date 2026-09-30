@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}人脸底库 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}人脸底库{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <h2>提交人脸并命名</h2>
+    <span class="badge {{ 'info' if ready else 'danger' }}" id="modelBadge">
+      {{ '模型就绪' if ready else '模型未就绪' }}
+    </span>
+  </div>
+  <p class="hint">
+    上传一张清晰的<strong>正脸照片</strong>并填写姓名，系统会提取人脸特征存入底库。
+    之后在摄像头画面中识别到这个人时，就会显示姓名而不是临时编号。
+    <br>相似度匹配阈值 {{ threshold }}（偏严，宁可认不出也不认错人）。
+  </p>
+
+  <div class="face-reg">
+    <div class="face-drop" id="faceDrop">
+      <input type="file" id="faceFile" accept="image/*" hidden>
+      <div class="face-drop-inner" id="dropInner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" width="34" height="34"><path d="M12 16V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>
+        <b>点击选择人脸照片</b>
+        <span>支持 JPG / PNG / BMP / WebP</span>
+      </div>
+      <img id="facePreview" class="face-preview" alt="预览" hidden>
+    </div>
+    <div class="face-form">
+      <label>姓名 <i>*</i></label>
+      <input type="text" id="faceName" placeholder="例如：张工" maxlength="32">
+      <label>备注</label>
+      <input type="text" id="faceNote" placeholder="部门 / 工号，可选" maxlength="64">
+      <div class="face-actions">
+        <button class="btn" id="btnRegister" disabled>提交并注册</button>
+        <button class="btn ghost" id="btnSelfTest" disabled>试识别这张照片</button>
+      </div>
+      <div class="face-result" id="faceResult"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>已录入人员</h2>
+    <span class="flex-sp"></span>
+    <span class="hint" id="galleryCount">-</span>
+    <button class="btn danger ghost sm" id="btnDelPersons">删除选中</button>
+  </div>
+  <div class="tbl-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th class="w36"><input type="checkbox" id="chkAllPerson"></th>
+          <th>照片</th><th>ID</th><th>姓名</th><th>备注</th><th>录入时间</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="tbPersons"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const THRESHOLD = {{ threshold }};
+let pickedFile = null;
+
+/* ---------- 选择照片 ---------- */
+const drop = document.getElementById('faceDrop');
+const file = document.getElementById('faceFile');
+const preview = document.getElementById('facePreview');
+const inner = document.getElementById('dropInner');
+
+drop.addEventListener('click', () => file.click());
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files.length) { file.files = e.dataTransfer.files; onPick(); }
+});
+file.addEventListener('change', onPick);
+
+function onPick() {
+  const f = file.files[0];
+  if (!f) return;
+  pickedFile = f;
+  preview.src = URL.createObjectURL(f);
+  preview.hidden = false;
+  inner.hidden = true;
+  document.getElementById('btnRegister').disabled = false;
+  document.getElementById('btnSelfTest').disabled = false;
+  document.getElementById('faceResult').textContent = '';
+}
+
+/* ---------- 注册 ---------- */
+document.getElementById('btnRegister').addEventListener('click', async () => {
+  const name = document.getElementById('faceName').value.trim();
+  if (!name) return toast('请填写姓名', 'error');
+  if (!pickedFile) return toast('请先选择照片', 'error');
+
+  const fd = new FormData();
+  fd.append('file', pickedFile);
+  fd.append('name', name);
+  fd.append('note', document.getElementById('faceNote').value.trim());
+
+  const btn = document.getElementById('btnRegister');
+  btn.disabled = true;
+  btn.textContent = '识别中…';
+  const box = document.getElementById('faceResult');
+  try {
+    const r = await fetch('/api/faces/register', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!d.ok) {
+      box.className = 'face-result err';
+      box.textContent = d.error || '注册失败';
+      toast(d.error || '注册失败', 'error');
+    } else {
+      box.className = 'face-result ok';
+      box.textContent = `已注册：${d.name}（ID ${d.id}）`;
+      toast('注册成功');
+      resetForm();
+      loadPersons();
+    }
+  } catch (e) {
+    box.className = 'face-result err';
+    box.textContent = '请求失败：' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '提交并注册';
+  }
+});
+
+/* ---------- 自检识别 ---------- */
+document.getElementById('btnSelfTest').addEventListener('click', async () => {
+  if (!pickedFile) return toast('请先选择照片', 'error');
+  const fd = new FormData();
+  fd.append('file', pickedFile);
+  const box = document.getElementById('faceResult');
+  box.className = 'face-result';
+  box.textContent = '识别中…';
+  try {
+    const r = await fetch('/api/faces/identify', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!d.ok) {
+      box.className = 'face-result err';
+      box.textContent = d.error || '识别失败';
+      return;
+    }
+    box.className = 'face-result';
+    box.innerHTML = d.faces.map(f => {
+      const tag = f.is_temp
+        ? '<span class="badge warn">未注册</span>'
+        : '<span class="badge info">已注册</span>';
+      return `<div>${tag} <b>${f.name}</b> · 相似度 ${f.score.toFixed(3)} ${f.score >= THRESHOLD ? '（≥阈值，命中）' : '（<阈值，判为陌生人）'}</div>`;
+    }).join('');
+  } catch (e) {
+    box.className = 'face-result err';
+    box.textContent = '请求失败：' + e;
+  }
+});
+
+function resetForm() {
+  file.value = '';
+  pickedFile = null;
+  preview.hidden = true;
+  preview.removeAttribute('src');
+  inner.hidden = false;
+  document.getElementById('faceName').value = '';
+  document.getElementById('faceNote').value = '';
+  document.getElementById('btnRegister').disabled = true;
+  document.getElementById('btnSelfTest').disabled = true;
+}
+
+/* ---------- 底库列表 ---------- */
+async function loadPersons() {
+  const d = await (await fetch('/api/faces/list')).json();
+  const tb = document.getElementById('tbPersons');
+  document.getElementById('galleryCount').textContent = `共 ${d.persons.length} 人`;
+  if (!d.persons.length) {
+    tb.innerHTML = '<tr><td colspan="7" class="empty">底库为空，先在上面提交一张人脸照片</td></tr>';
+    return;
+  }
+  tb.innerHTML = d.persons.map(p => {
+    const img = p.thumb
+      ? `<img class="thumb face-thumb" src="/static/${p.thumb}">`
+      : '<span class="badge">无图</span>';
+    return `<tr>
+      <td class="w36"><input type="checkbox" class="person-chk" value="${p.id}"></td>
+      <td>${img}</td>
+      <td>#${p.id}</td>
+      <td><b>${esc(p.name)}</b></td>
+      <td>${esc(p.note) || '-'}</td>
+      <td>${p.created_at}</td>
+      <td><button class="btn danger ghost sm" onclick="delPerson(${p.id})">删除</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function esc(s) {
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function delPerson(id) {
+  if (!confirm('确定删除这个人？删除后他将被识别为临时访客。')) return;
+  await postJSON('/api/faces/delete', { ids: [id] });
+  toast('已删除');
+  loadPersons();
+}
+
+document.getElementById('btnDelPersons').addEventListener('click', async () => {
+  const ids = [...document.querySelectorAll('.person-chk:checked')].map(c => +c.value);
+  if (!ids.length) return toast('请先勾选要删除的人员', 'error');
+  if (!confirm(`确定删除选中的 ${ids.length} 位人员？`)) return;
+  await postJSON('/api/faces/delete', { ids });
+  toast('已删除');
+  loadPersons();
+});
+
+document.getElementById('chkAllPerson').addEventListener('change', e => {
+  document.querySelectorAll('.person-chk').forEach(c => c.checked = e.target.checked);
+});
+
+async function postJSON(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+loadPersons();
+</script>
+{% endblock %}

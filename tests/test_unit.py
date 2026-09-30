@@ -630,6 +630,366 @@ class TestDetectionPayload(unittest.TestCase):
         self.assertEqual((w, h), (640, 480))
 
 
+class TestFaceIdentify(unittest.TestCase):
+    """face_db.identify：比对阈值逻辑。
+
+    ⚠️ 这里刻意用「构造的单位向量」而不是真实人脸照片来做断言。
+    原因：真实照片的相似度受光照/角度影响，数值不稳定，写死会变成脆弱测试；
+    而阈值判断是纯数学逻辑，用正交/同向向量可以精确验证「该命中」和「该拒绝」，
+    既快又不会因为换张照片就挂。
+    """
+
+    def setUp(self):
+        import tempfile
+
+        import config
+
+        self._tmp = tempfile.mkdtemp()
+        self._old_db = config.DB_PATH
+        config.DB_PATH = Path(self._tmp) / "face_test.db"
+
+        import face_db
+
+        self.f = face_db
+        # 重置模块级线程局部连接，确保指向新库
+        self.f.close()
+        self.f.init_db()
+        self.f.reset_temp_registry()
+
+    def tearDown(self):
+        import config
+
+        self.f.close()
+        config.DB_PATH = self._old_db
+
+    @staticmethod
+    def _vec(dim, idx):
+        """构造第 idx 维为 1 的单位向量（彼此正交，相似度 0）。"""
+        v = np.zeros(dim, dtype=np.float32)
+        v[idx] = 1.0
+        return v
+
+    def test_exact_same_face_matches(self):
+        """同一特征必须命中，相似度为 1。"""
+        e = self._vec(512, 0)
+        pid = self.f.register("张工", e)
+        got_pid, name, score, is_temp = self.f.identify(e)
+        self.assertEqual(got_pid, pid)
+        self.assertEqual(name, "张工")
+        self.assertFalse(is_temp)
+        self.assertAlmostEqual(score, 1.0, places=4)
+
+    def test_orthogonal_face_is_rejected(self):
+        """正交向量（相似度 0）必须判为未注册，不能瞎认。"""
+        self.f.register("张工", self._vec(512, 0))
+        _, name, score, is_temp = self.f.identify(self._vec(512, 1))
+        self.assertTrue(is_temp, "相似度 0 不该命中底库")
+        self.assertTrue(name.startswith("访客-"), f"应给临时编号，实际 {name}")
+
+    def test_threshold_boundary(self):
+        """恰好等于阈值应算命中（>= 判定），略低于阈值应拒绝。
+
+        这个边界很容易在重构时被写成 > 而不是 >=，值得钉住。
+        """
+        th = self.f.MATCH_THRESHOLD
+        # 构造与基准向量相似度恰为 th 的向量：cos = th
+        base = np.zeros(512, dtype=np.float32)
+        base[0] = 1.0
+        other = np.zeros(512, dtype=np.float32)
+        other[0] = th
+        other[1] = float(np.sqrt(max(0.0, 1 - th * th)))
+        self.f.register("边界", base)
+
+        _, name, score, is_temp = self.f.identify(other)
+        self.assertFalse(is_temp, f"相似度 {score} 达到阈值 {th} 应命中")
+        self.assertEqual(name, "边界")
+
+        # 略低于阈值
+        lower = np.zeros(512, dtype=np.float32)
+        k = th - 0.05
+        lower[0] = k
+        lower[1] = float(np.sqrt(max(0.0, 1 - k * k)))
+        _, name2, _, is_temp2 = self.f.identify(lower)
+        self.assertTrue(is_temp2, f"相似度 {k:.3f} 低于阈值 {th} 不该命中")
+
+    def test_empty_gallery_returns_temp(self):
+        """底库为空时不能崩，应返回临时编号。"""
+        _, name, score, is_temp = self.f.identify(self._vec(512, 3))
+        self.assertTrue(is_temp)
+        self.assertEqual(score, 0.0)
+        self.assertTrue(name.startswith("访客-"))
+
+    def test_zero_vector_does_not_crash(self):
+        """全零向量（范数为 0）会让归一化除零，必须兜住。"""
+        self.f.register("张工", self._vec(512, 0))
+        try:
+            _, name, _, is_temp = self.f.identify(np.zeros(512, dtype=np.float32))
+        except ZeroDivisionError:
+            self.fail("全零向量导致除零崩溃")
+        self.assertTrue(is_temp)
+
+    def test_picks_best_match_not_first(self):
+        """必须取最相似的那个，而不是底库里第一个。"""
+        self.f.register("甲", self._vec(512, 0))
+        self.f.register("乙", self._vec(512, 1))
+        _, name, _, is_temp = self.f.identify(self._vec(512, 1))
+        self.assertFalse(is_temp)
+
+    def test_dim_mismatch_row_skipped(self):
+        """底库里混入维度不符的脏数据时，跳过它而不是整体崩溃。"""
+        self.f.register("正常", self._vec(512, 0))
+        conn = self.f.get_conn()
+        conn.execute(
+            "INSERT INTO face_persons (name, note, embedding, created_at) VALUES (?,?,?,?)",
+            ("脏数据", "", np.zeros(128, dtype=np.float32).tobytes(), "2026-01-01 00:00:00"),
+        )
+        conn.commit()
+        _, name, _, is_temp = self.f.identify(self._vec(512, 0))
+        self.assertFalse(is_temp, "遇到脏数据不该放弃正常比对")
+
+
+class TestFaceTempIds(unittest.TestCase):
+    """临时访客编号：同一张脸必须保持同一个编号。
+
+    这是需求「没录入的人算临时 id」的核心质量点——
+    如果同一张脸每次都被发新号，统计页上一个人会被拆成十几行，功能等于废掉。
+    """
+
+    def setUp(self):
+        import tempfile
+
+        import config
+
+        self._tmp = tempfile.mkdtemp()
+        self._old_db = config.DB_PATH
+        config.DB_PATH = Path(self._tmp) / "face_test2.db"
+
+        import face_db
+
+        self.f = face_db
+        self.f.close()
+        self.f.init_db()
+        self.f.reset_temp_registry()
+
+    def tearDown(self):
+        import config
+
+        self.f.close()
+        config.DB_PATH = self._old_db
+
+    @staticmethod
+    def _vec(dim, idx):
+        v = np.zeros(dim, dtype=np.float32)
+        v[idx] = 1.0
+        return v
+
+    def test_same_face_keeps_same_temp_id(self):
+        """同一张脸连续识别，编号必须稳定不变。"""
+        v = self._vec(512, 5)
+        _, n1, _, _ = self.f.identify(v)
+        _, n2, _, _ = self.f.identify(v)
+        _, n3, _, _ = self.f.identify(v)
+        self.assertEqual(n1, n2, "同一张脸第二次被发了新编号")
+        self.assertEqual(n2, n3, "同一张脸第三次被发了新编号")
+
+    def test_different_faces_get_different_ids(self):
+        """不同的人必须是不同编号，不能共用。"""
+        _, n1, _, _ = self.f.identify(self._vec(512, 10))
+        _, n2, _, _ = self.f.identify(self._vec(512, 20))
+        self.assertNotEqual(n1, n2, "两个不同的人共用了同一个临时编号")
+
+    def test_reset_clears_registry(self):
+        """重置后应从头发号。"""
+        self.f.identify(self._vec(512, 7))
+        self.f.reset_temp_registry()
+        _, n, _, _ = self.f.identify(self._vec(512, 8))
+        self.assertEqual(n, "访客-1")
+
+    def test_registered_person_never_gets_temp_id(self):
+        """已注册的人不能被发临时编号。"""
+        v = self._vec(512, 30)
+        self.f.register("李工", v)
+        pid, name, _, is_temp = self.f.identify(v)
+        self.assertFalse(is_temp)
+        self.assertEqual(name, "李工")
+        self.assertIsNotNone(pid)
+
+
+class TestFaceStore(unittest.TestCase):
+    """face_db 的底库与识别记录存取、统计。"""
+
+    def setUp(self):
+        import tempfile
+
+        import config
+
+        self._tmp = tempfile.mkdtemp()
+        self._old_db = config.DB_PATH
+        config.DB_PATH = Path(self._tmp) / "face_test3.db"
+
+        import face_db
+
+        self.f = face_db
+        self.f.close()
+        self.f.init_db()
+        self.f.reset_temp_registry()
+
+    def tearDown(self):
+        import config
+
+        self.f.close()
+        config.DB_PATH = self._old_db
+
+    @staticmethod
+    def _vec(dim, idx):
+        v = np.zeros(dim, dtype=np.float32)
+        v[idx] = 1.0
+        return v
+
+    def test_register_requires_name(self):
+        """姓名为空必须被拒绝（否则底库里全是无名氏）。"""
+        with self.assertRaises(ValueError):
+            self.f.register("   ", self._vec(512, 0))
+
+    def test_register_strips_name(self):
+        """姓名两端空格应被去掉，避免「张工」和「张工 」被当成两个人。"""
+        pid = self.f.register("  张工  ", self._vec(512, 0))
+        p = self.f.get_person(pid)
+        self.assertEqual(p["name"], "张工")
+
+    def test_delete_person(self):
+        pid = self.f.register("待删", self._vec(512, 0))
+        self.assertTrue(self.f.delete_person(pid))
+        self.assertEqual(self.f.count_persons(), 0)
+        self.assertIsNone(self.f.get_person(pid))
+
+    def test_delete_missing_returns_false(self):
+        self.assertFalse(self.f.delete_person(99999))
+
+    def test_embedding_roundtrip(self):
+        """特征存入再读出必须完全一致（否则等于换了张脸）。"""
+        v = np.random.RandomState(42).randn(512).astype(np.float32)
+        v = v / np.linalg.norm(v)
+        pid = self.f.register("张三", v)
+        p = self.f.get_person(pid)
+        back = np.frombuffer(p["embedding"], dtype=np.float32)
+        np.testing.assert_allclose(back, v, rtol=0, atol=1e-6)
+
+    def test_person_list_excludes_embedding(self):
+        """列表接口不能带 embedding——体积大且无展示价值。"""
+        self.f.register("张工", self._vec(512, 0))
+        for p in self.f.list_persons():
+            self.assertNotIn("embedding", p)
+
+    def test_seen_records_and_summary(self):
+        """识别记录落库后，总览统计要能对上。"""
+        pid = self.f.register("张工", self._vec(512, 0))
+        self.f.add_seen(pid, "张工", False, 0.91)
+        self.f.add_seen(None, "访客-1", True, 0.12)
+
+        s = self.f.stats_seen_summary()
+        self.assertEqual(s["total"], 2)
+        self.assertEqual(s["registered_seen"], 1)
+        self.assertEqual(s["temp_seen"], 1)
+        self.assertEqual(s["distinct_registered"], 1)
+        self.assertEqual(s["distinct_temp"], 1)
+        self.assertEqual(s["gallery_size"], 1)
+
+    def test_seen_filter_by_temp(self):
+        """按「是否未注册」筛选必须准确。"""
+        self.f.add_seen(1, "张工", False, 0.9)
+        self.f.add_seen(None, "访客-1", True, 0.1)
+
+        rows, total = self.f.query_seen(only_temp=True)
+        self.assertEqual(total, 1)
+        self.assertTrue(rows[0]["is_temp"])
+
+        rows, total = self.f.query_seen(only_temp=False)
+        self.assertEqual(total, 1)
+        self.assertFalse(rows[0]["is_temp"])
+
+    def test_person_ranking_groups_by_name(self):
+        """按人聚合：同一个人出现两次应合成一行、计数为 2。"""
+        self.f.add_seen(1, "张工", False, 0.9)
+        self.f.add_seen(1, "张工", False, 0.8)
+        self.f.add_seen(2, "李工", False, 0.85)
+
+        st = self.f.stats_persons()
+        reg = {r["person_name"]: r["n"] for r in st["registered"]}
+        self.assertEqual(reg.get("张工"), 2)
+        self.assertEqual(reg.get("李工"), 1)
+
+    def test_clear_seen_keeps_gallery(self):
+        """清空识别明细不能连底库一起清掉。"""
+        pid = self.f.register("张工", self._vec(512, 0))
+        self.f.add_seen(pid, "张工", False, 0.9)
+        n = self.f.clear_seen()
+        self.assertEqual(n, 1)
+        self.assertEqual(self.f.count_persons(), 1, "清空明细误删了底库人员")
+
+    def test_daily_series_length_and_shape(self):
+        """近 14 天序列必须是 14 个点且字段齐全（绘图直接用）。"""
+        daily = self.f.stats_seen_daily(14)
+        self.assertEqual(len(daily), 14)
+        for d in daily:
+            self.assertIn("date", d)
+            self.assertIn("registered", d)
+            self.assertIn("temp", d)
+
+    def test_face_model_ready_is_bool_without_loading(self):
+        """face_model_ready 只做文件检查，不该触发模型加载（否则会拖慢接口）。"""
+        v = self.f.face_model_ready()
+        self.assertIsInstance(v, bool)
+
+
+class TestFaceAnnotation(unittest.TestCase):
+    """camera._annotate_faces / _recognize_frame 的绘制行为。
+
+    这两个函数的接口约定容易被改坏：早先版本是「原地修改入参」，
+    调用方传了 frame 和 annotated 两个不同对象时，画的是 annotated
+    但很多人以为改的是 frame，导致姓名框莫名其妙不出现在画面上。
+    改成返回新图后，这个测试把约定钉死。
+    """
+
+    def test_annotate_returns_new_image_not_same_object(self):
+        """必须返回新图，而不是依赖调用方传对对象。"""
+        import camera
+
+        img = _img(200, 150, (30, 30, 30))
+        faces = [{"name": "张三", "score": 0.9, "is_temp": False, "box": [20, 20, 100, 100]}]
+        out = camera._annotate_faces(img, faces)
+        self.assertFalse(np.array_equal(out, img), "画框后图像应与原图不同")
+        self.assertEqual(out.shape, img.shape, "尺寸不能变")
+
+    def test_annotate_empty_faces_keeps_image(self):
+        """没人脸时不该改动图像。"""
+        import camera
+
+        img = _img(80, 60, (10, 20, 30))
+        out = camera._annotate_faces(img, [])
+        self.assertTrue(np.array_equal(out, img))
+
+    def test_annotate_handles_chinese_name(self):
+        """中文姓名必须能画上去（cv2 画中文会变问号，所以走了 PIL）。"""
+        import camera
+
+        img = _img(200, 150, (255, 255, 255))
+        faces = [{"name": "王工程师", "score": 0.88, "is_temp": False, "box": [10, 10, 120, 120]}]
+        out = camera._annotate_faces(img, faces)
+        self.assertFalse(np.array_equal(out, img))
+
+    def test_annotate_survives_bad_box(self):
+        """框坐标异常（NaN / 越界）不能让绘制抛异常。"""
+        import camera
+
+        img = _img(100, 100, (0, 0, 0))
+        bad = [{"name": "异常", "score": 0.5, "is_temp": True, "box": [float("nan"), 0, 50, 50]}]
+        try:
+            camera._annotate_faces(img, bad)
+        except Exception as e:  # noqa: BLE001
+            self.fail(f"异常框导致绘制崩溃: {e}")
+
+
 def main():
     argv = sys.argv[:]
     if "-v" in argv:
@@ -652,6 +1012,10 @@ def main():
             TestPhoneDecode,
             TestInferLock,
             TestDetectionPayload,
+            TestFaceIdentify,
+            TestFaceTempIds,
+            TestFaceStore,
+            TestFaceAnnotation,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)

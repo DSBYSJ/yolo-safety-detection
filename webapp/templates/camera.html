@@ -14,6 +14,7 @@
         <button class="seg-btn active" data-kind="helmet">安全帽检测</button>
         <button class="seg-btn" data-kind="mask">口罩检测</button>
       </div>
+      <button class="btn ghost" id="btnFace">开启人脸识别</button>
       <button class="btn ghost" id="btnSnap">抓拍存档</button>
     </div>
   </div>
@@ -26,13 +27,16 @@
       <div class="kv"><span>当前检测类型</span><b id="stKind">安全帽检测</b></div>
       <div class="kv"><span>推理速度</span><b id="stFps">-</b></div>
       <div class="kv"><span>最近一帧目标</span><b id="stCounts">-</b></div>
+      <div class="kv"><span>识别到的人</span><b id="stFaces">未开启</b></div>
     </div>
     <div class="note-box">
       <b>说明</b>
       <ul>
         <li>画面每帧经 YOLOv8 推理后以 MJPEG 流回传到浏览器；</li>
         <li>检测到目标时，每 5 秒自动保存一条检测记录（含标注截图），可在「检测记录」页查看；</li>
-        <li>点击「抓拍存档」可立即保存当前画面与检测统计。</li>
+        <li><b>人脸识别</b>需先在「人脸底库」页录入人员；识别到已录入的人显示姓名，
+            未录入的显示临时访客编号，并按人汇总到「合规统计」页；</li>
+        <li>人脸识别按间隔执行（默认 2 秒一次），以避免拖慢画面流畅度。</li>
       </ul>
     </div>
   </div>
@@ -129,6 +133,23 @@ document.getElementById('btnSnap').addEventListener('click', async () => {
   else toast(d.error || '抓拍失败', 'error');
 });
 
+/* ---------- 人脸识别开关 ---------- */
+let faceOn = false;
+const btnFace = document.getElementById('btnFace');
+btnFace.addEventListener('click', async () => {
+  const want = !faceOn;
+  const r = await fetch('/api/camera/face', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({on: want})
+  });
+  const d = await r.json();
+  if (!d.ok) return toast(d.error || '操作失败', 'error');
+  faceOn = d.face;
+  btnFace.textContent = faceOn ? '关闭人脸识别' : '开启人脸识别';
+  btnFace.classList.toggle('active', faceOn);
+  toast(faceOn ? '已开启人脸识别' : '已关闭人脸识别');
+});
+
 /* 接入引导的标签切换 */
 document.querySelectorAll('.setup-tabs .seg-btn').forEach(b => b.addEventListener('click', () => {
   document.querySelectorAll('.setup-tabs .seg-btn').forEach(x => x.classList.remove('active'));
@@ -154,6 +175,21 @@ setInterval(async () => {
     const c = s.counts || {};
     const txt = Object.keys(c).filter(k => c[k] > 0).map(k => CN[k] + '×' + c[k]).join('，');
     document.getElementById('stCounts').textContent = txt || '-';
+
+    // 人脸识别结果：把人名/访客编号列出来
+    const faces = s.faces || [];
+    const stFaces = document.getElementById('stFaces');
+    if (!s.face) {
+      stFaces.textContent = '未开启';
+      stFaces.className = '';
+    } else if (!faces.length) {
+      stFaces.textContent = '画面中暂无人脸';
+      stFaces.className = '';
+    } else {
+      const names = faces.map(f => f.is_temp ? (f.name + '（未注册）') : f.name);
+      stFaces.textContent = names.join('，');
+      stFaces.className = 'txt-green';
+    }
 
     // 连续 3 次（约 6 秒）取不到画面，且从未成功加载过流 → 认为需要接入引导
     if (!s.ok) {

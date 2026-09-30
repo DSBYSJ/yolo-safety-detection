@@ -24,6 +24,8 @@ _state = {
     "fps": 0.0,
     "counts": {},         # 最近一帧各类别计数
     "time": 0.0,
+    "face": False,        # 是否同时对画面做人脸识别
+    "faces": [],          # 最近一帧识别到的人：[{name, score, is_temp, box}]
 }
 
 
@@ -110,9 +112,83 @@ def _save_record(counts: dict, annotated: np.ndarray, kind: str, tms: float) -> 
     )
 
 
+def _recognize_frame(frame, annotated):
+    """对一帧做识别，返回 (标注后的图, [{name, score, is_temp, box}])。
+
+    显式返回标注图而不是原地改入参：调用方常把 frame 和 annotated 传成
+    两个不同对象（frame 给推理、annotated 给绘制），原地改容易让人以为
+    改的是 frame。返回新图可以让调用方明确知道自己拿到的是什么。
+
+    这里刻意不抛异常：人脸识别失败（模型缺失、没有人脸、各种意外）
+    都不应该中断抓帧主循环——安全帽/口罩检测才是主线功能，
+    人脸识别属于附加能力，坏了就静默降级，画面照常出。
+    """
+    try:
+        import face_db
+
+        if not face_db.face_model_ready():
+            return annotated, []
+        faces = face_db.extract_faces(frame)
+    except Exception:  # noqa: BLE001
+        return annotated, []
+
+    out = []
+    for fc in faces:
+        try:
+            pid, name, score, is_temp = face_db.identify(fc["embedding"])
+        except Exception:  # noqa: BLE001
+            continue
+        out.append(
+            {
+                "name": name,
+                "score": score,
+                "is_temp": is_temp,
+                "person_id": pid,
+                "box": [round(float(v), 1) for v in fc["bbox"]],
+            }
+        )
+        try:
+            face_db.add_seen(pid, name, is_temp, score)
+        except Exception:  # noqa: BLE001
+            pass          # 落库失败不影响画面标注
+
+    if out:
+        annotated = _annotate_faces(annotated, out)
+    return annotated, out
+
+
+def _annotate_faces(img, faces: list):
+    """在图上画人脸框 + 姓名（用 PIL 以支持中文），返回新图。
+
+    用 cv2 画不出中文（会变成一串 ?），所以走 PIL 转换往返。
+    绘制失败时返回原图，绝不让画框问题盖掉识别结果。
+    """
+    try:
+        pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil)
+        font = fontutil.get_font(18)
+        for f in faces:
+            x1, y1, x2, y2 = f["box"]
+            # 已注册用青色，未注册用橙色，一眼区分「认识」和「不认识」
+            rgb = (255, 190, 40) if f["is_temp"] else (60, 210, 210)
+            draw.rectangle([x1, y1, x2, y2], outline=rgb, width=2)
+            label = f'{f["name"]}'
+            tb = draw.textbbox((0, 0), label, font=font)
+            tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            ty = y1 - th - 8
+            if ty < 2:
+                ty = y2 + 2
+            draw.rectangle([x1, ty, x1 + tw + 10, ty + th + 8], fill=rgb)
+            draw.text((x1 + 5, ty + 2), label, fill=(20, 20, 20), font=font)
+        return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    except Exception:  # noqa: BLE001
+        return img
+
+
 def _worker() -> None:
     cap = None
     last_record = 0.0
+    last_face = 0.0          # 上次人脸识别的时间戳（人脸识别按间隔跑，不逐帧）
     fails = 0   # 连续读帧失败次数，用于区分偶发丢帧与真的断流
     is_stream = False
     while not _stop:
@@ -154,6 +230,7 @@ def _worker() -> None:
 
         with _lock:
             kind = _state["kind"] or "helmet"
+            face_on = _state.get("face", False)
         try:
             _, counts, annotated, tms = detector.infer_image(frame, [kind])
         except Exception:
@@ -161,6 +238,23 @@ def _worker() -> None:
         fps = round(1000.0 / tms, 1) if tms else 0.0
 
         now = time.time()
+
+        # ---- 人脸识别（按间隔执行，不逐帧跑）----
+        # insightface 走 CPU，单帧约 200-400ms；若每帧都跑会把抓帧循环拖垮，
+        # 画面直接掉成幻灯片。因此按 config.FACE_INTERVAL 秒节流，
+        # 中间帧沿用上一次的识别结果，前端表现为「名字稳定挂着」而不是闪烁。
+        if face_on and now - last_face >= config.FACE_INTERVAL:
+            last_face = now
+            # 返回的是「重新绘制过的图」，必须接住并替换 annotated，
+            # 否则人脸姓名框不会出现在推给前端的画面里。
+            annotated, face_results = _recognize_frame(frame, annotated)
+            with _lock:
+                _state["faces"] = face_results
+        elif not face_on:
+            with _lock:
+                if _state.get("faces"):
+                    _state["faces"] = []
+
         if now - last_record >= config.CAMERA_RECORD_INTERVAL:
             last_record = now
             if sum(counts.values()) > 0:
@@ -176,11 +270,13 @@ def _worker() -> None:
         cap.release()
 
 
-def start(kind: str = "helmet") -> None:
-    """确保抓帧线程运行，并切换检测类型。"""
+def start(kind: str = "helmet", face: bool | None = None) -> None:
+    """确保抓帧线程运行，并切换检测类型（可选开关人脸识别）。"""
     global _thread, _stop
     with _lock:
         _state["kind"] = kind if kind in config.MODELS else "helmet"
+        if face is not None:
+            _state["face"] = bool(face)
     if _thread is None or not _thread.is_alive():
         _stop = False
         _thread = threading.Thread(target=_worker, daemon=True)
@@ -190,6 +286,14 @@ def start(kind: str = "helmet") -> None:
 def set_kind(kind: str) -> None:
     with _lock:
         _state["kind"] = kind if kind in config.MODELS else "helmet"
+
+
+def set_face(on: bool) -> None:
+    """开关摄像头实时人脸识别。"""
+    with _lock:
+        _state["face"] = bool(on)
+        if not on:
+            _state["faces"] = []
 
 
 def _mask_source(url: str) -> str:

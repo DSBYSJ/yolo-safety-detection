@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block title %}合规统计 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}合规统计{% endblock %}
+{% block content %}
+<p class="hint">
+  按<strong>人</strong>汇总佩戴情况。安全帽与口罩是两套独立模型，<strong>分开统计、互不交叉</strong>。
+  已录入底库的人显示姓名，未录入的显示临时访客编号。
+</p>
+
+<div class="stat-grid" id="statGrid">
+  <div class="stat-card">
+    <span class="stat-label">底库人数</span>
+    <b class="stat-val" id="sGallery">-</b>
+    <span class="stat-sub">已录入姓名的人</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-label">识别总次数</span>
+    <b class="stat-val" id="sTotal">-</b>
+    <span class="stat-sub">今日 <i id="sToday">-</i> 次</span>
+  </div>
+  <div class="stat-card ok">
+    <span class="stat-label">已注册识别</span>
+    <b class="stat-val" id="sReg">-</b>
+    <span class="stat-sub">涉及 <i id="sRegDistinct">-</i> 人</span>
+  </div>
+  <div class="stat-card warn">
+    <span class="stat-label">未注册识别</span>
+    <b class="stat-val" id="sTemp">-</b>
+    <span class="stat-sub">涉及 <i id="sTempDistinct">-</i> 个访客</span>
+  </div>
+</div>
+
+<div class="chk-grid">
+  <div class="card">
+    <div class="card-head"><h2>安全帽佩戴（独立统计）</h2></div>
+    <div class="two-num">
+      <div><b class="num ok" id="cHelmet">-</b><span>佩戴安全帽</span></div>
+      <div><b class="num bad" id="cHead">-</b><span>未戴安全帽</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>口罩佩戴（独立统计）</h2></div>
+    <div class="two-num">
+      <div><b class="num ok" id="cMask">-</b><span>已戴口罩</span></div>
+      <div><b class="num bad" id="cFace">-</b><span>未戴口罩</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2>近 14 天识别趋势</h2></div>
+  <div id="chartDaily" class="chart"></div>
+</div>
+
+<div class="chk-grid">
+  <div class="card">
+    <div class="card-head"><h2>已注册人员识别排行</h2></div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>姓名</th><th>识别次数</th><th>平均相似度</th><th>最近出现</th></tr></thead>
+        <tbody id="tbReg"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>未注册访客</h2></div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>临时编号</th><th>出现次数</th><th>最高相似度</th><th>最近出现</th></tr></thead>
+        <tbody id="tbTemp"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>识别明细</h2>
+    <span class="flex-sp"></span>
+    <select id="fFilter">
+      <option value="">全部</option>
+      <option value="0">仅已注册</option>
+      <option value="1">仅未注册</option>
+    </select>
+    <input type="text" id="fPerson" placeholder="按姓名 / 编号搜索…" class="sm-input">
+    <button class="btn sm" id="btnQuery">查询</button>
+    <button class="btn danger ghost sm" id="btnClearSeen">清空明细</button>
+  </div>
+  <div class="tbl-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>ID</th><th>时间</th><th>人员</th><th>状态</th><th>相似度</th><th>抓拍</th></tr>
+      </thead>
+      <tbody id="tbSeen"></tbody>
+    </table>
+  </div>
+  <div class="pager">
+    <button class="btn ghost sm" id="pgPrev">上一页</button>
+    <span id="pgInfo">-</span>
+    <button class="btn ghost sm" id="pgNext">下一页</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let page = 1, totalPages = 1;
+
+function esc(s) {
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function loadSummary() {
+  const d = await (await fetch('/api/compliance')).json();
+  const s = d.seen_summary;
+
+  document.getElementById('sGallery').textContent = s.gallery_size;
+  document.getElementById('sTotal').textContent = s.total;
+  document.getElementById('sToday').textContent = s.today;
+  document.getElementById('sReg').textContent = s.registered_seen;
+  document.getElementById('sRegDistinct').textContent = s.distinct_registered;
+  document.getElementById('sTemp').textContent = s.temp_seen;
+  document.getElementById('sTempDistinct').textContent = s.distinct_temp;
+
+  const c = d.detect_classes;
+  document.getElementById('cHelmet').textContent = c['安全帽'];
+  document.getElementById('cHead').textContent = c['未戴安全帽'];
+  document.getElementById('cMask').textContent = c['口罩'];
+  document.getElementById('cFace').textContent = c['未戴口罩'];
+
+  renderChart(d.seen_daily);
+  renderRank('tbReg', d.persons.registered, ['person_name', 'n', 'avg_score', 'last_at'],
+    ['姓名', '识别次数', '平均相似度', '最近出现']);
+  renderRank('tbTemp', d.persons.temp, ['person_name', 'n', 'avg_score', 'last_at'],
+    ['临时编号', '出现次数', '最高相似度', '最近出现']);
+}
+
+function renderRank(tbodyId, rows, keys, heads) {
+  const tb = document.getElementById(tbodyId);
+  if (!rows || !rows.length) {
+    tb.innerHTML = `<tr><td colspan="${heads.length}" class="empty">暂无数据</td></tr>`;
+    return;
+  }
+  tb.innerHTML = rows.map(r =>
+    `<tr>${keys.map((k, i) => {
+      const v = r[k];
+      return `<td>${i === 0 ? '<b>' + esc(v) + '</b>' : esc(v)}</td>`;
+    }).join('')}</tr>`
+  ).join('');
+}
+
+let chart = null;
+function renderChart(daily) {
+  const el = document.getElementById('chartDaily');
+  if (!chart) chart = echarts.init(el);
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['已注册', '未注册'], right: 10, top: 0 },
+    grid: { left: 40, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: daily.map(d => d.date), boundaryGap: false },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [
+      {
+        name: '已注册', type: 'line', smooth: true,
+        data: daily.map(d => d.registered),
+        itemStyle: { color: '#1d9e75' }, areaStyle: { color: 'rgba(29,158,117,.12)' }
+      },
+      {
+        name: '未注册', type: 'line', smooth: true,
+        data: daily.map(d => d.temp),
+        itemStyle: { color: '#ba7517' }, areaStyle: { color: 'rgba(186,117,23,.12)' }
+      }
+    ]
+  });
+  window.addEventListener('resize', () => chart && chart.resize());
+}
+
+async function loadSeen() {
+  const params = new URLSearchParams({
+    page, size: 10,
+    person: document.getElementById('fPerson').value.trim(),
+    only_temp: document.getElementById('fFilter').value
+  });
+  const d = await (await fetch('/api/compliance/seen?' + params)).json();
+  totalPages = Math.max(1, Math.ceil(d.total / d.size));
+  document.getElementById('pgInfo').textContent =
+    `第 ${d.page} / ${totalPages} 页 · 共 ${d.total} 条`;
+
+  const tb = document.getElementById('tbSeen');
+  if (!d.items.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">暂无识别记录</td></tr>';
+    return;
+  }
+  tb.innerHTML = d.items.map(r => {
+    const badge = r.is_temp
+      ? '<span class="badge warn">未注册</span>'
+      : '<span class="badge info">已注册</span>';
+    const img = r.image_path
+      ? `<img class="thumb" src="/static/${r.image_path}">`
+      : '-';
+    return `<tr>
+      <td>#${r.id}</td>
+      <td>${r.created_at}</td>
+      <td><b>${esc(r.person_name)}</b></td>
+      <td>${badge}</td>
+      <td>${r.score ? r.score.toFixed(3) : '-'}</td>
+      <td>${img}</td>
+    </tr>`;
+  }).join('');
+}
+
+document.getElementById('btnQuery').addEventListener('click', () => { page = 1; loadSeen(); });
+document.getElementById('fFilter').addEventListener('change', () => { page = 1; loadSeen(); });
+document.getElementById('pgPrev').addEventListener('click', () => { if (page > 1) { page--; loadSeen(); } });
+document.getElementById('pgNext').addEventListener('click', () => { if (page < totalPages) { page++; loadSeen(); } });
+
+document.getElementById('btnClearSeen').addEventListener('click', async () => {
+  if (!confirm('确定清空全部识别明细？底库人员不会被删除。')) return;
+  const r = await fetch('/api/compliance/seen/clear', { method: 'POST' });
+  const d = await r.json();
+  toast(`已清空 ${d.cleared} 条`);
+  page = 1;
+  loadSummary(); loadSeen();
+});
+
+loadSummary();
+loadSeen();
+</script>
+{% endblock %}
