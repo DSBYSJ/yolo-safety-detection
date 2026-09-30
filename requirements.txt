@@ -1,6 +1,11 @@
 # Web 框架
 flask>=3.0
 
+# 生产级 WSGI 服务器（默认启动方式）。
+# 不用 Flask 自带开发服务器跑手机端逐帧检测 —— 它处理 HTTPS 时会在客户端
+# 断开后堆积 CLOSE_WAIT，最终整站无响应。cheroot 原生支持 SSL 且连接可回收。
+cheroot>=10.0
+
 # 目标检测框架（自动包含 OpenCV、Pandas、Matplotlib 等依赖）
 ultralytics>=8.3.0
 

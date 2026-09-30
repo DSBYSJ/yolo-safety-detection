@@ -498,27 +498,64 @@ def _local_ip() -> str:
         s.close()
 
 
-def _run_dev_server(use_ssl, ssl_cert, ssl_key, threads=1):
-    """Flask 自带开发服务器。
+def _run_dev_server(use_ssl, ssl_cert, ssl_key):
+    """Flask 自带开发服务器（仅在没有 cheroot/waitress 时兜底）。
 
-    ⚠️ **threaded=False（单线程）是有意为之**，不是图省事。
-
-    本服务的瓶颈是 GPU 推理 —— 而推理已经由 detector._infer_lock 串行化了，
-    多线程不会带来任何吞吐提升，只会让请求在锁上排队、把线程和内存耗光。
-    实测：threaded=True 时，手机端逐帧 + 摄像头线程并发会把进程内存
-    从 450MB 推到 1.4GB，并出现 CLOSE_WAIT 堆积、最终整站无响应。
-
-    单线程下请求天然串行，配合前端 6 秒 abort + 指数退避，
-    内存与连接数都稳定可控，慢一点但不会崩。
-
-    （若日后要提吞吐，正确方向是换 waitress/cheroot 这类
-      自带固定线程池与 SSL 支持的生产级服务器，而不是开 threaded。）
+    ⚠️ **不要用它跑手机端逐帧检测。** 它的 threaded 模式对 SSL 处理很弱：
+    客户端正常关闭连接（FIN）时，正忙于推理的服务端来不及 close()，
+    于是 CLOSE_WAIT 不断堆积，最终整个进程无响应（浏览器 ERR_TIMED_OUT）。
+    实测 threaded=True 时 CLOSE_WAIT 可堆到 17 个、内存涨到 1.4GB。
     """
     if use_ssl:
-        app.run(host="0.0.0.0", port=5000, threaded=False, debug=False,
+        app.run(host="0.0.0.0", port=5000, threaded=True, debug=False,
                 ssl_context=(ssl_cert, ssl_key))
     else:
-        app.run(host="0.0.0.0", port=5000, threaded=False, debug=False)
+        app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)
+
+
+def _run_prod_server(use_ssl, ssl_cert, ssl_key):
+    """cheroot 生产级 WSGI 服务器（默认启动方式）。
+
+    cheroot（CherryPy 的服务器内核）相比 Flask 开发服务器的关键优势：
+
+    1. **SSL 原生支持** —— 通过 BuiltinSSLAdapter 接管，不做奇怪的中间层，
+       连接生命周期由它自己管理，不会出现 CLOSE_WAIT 堆积；
+    2. **固定线程池** —— 线程数可控，不会因请求堆积无限膨胀；
+    3. **优雅关闭连接** —— 有明确的超时与收割机制。
+
+    （备选是 waitress，但 waitress 3.x 的 Adjustments 不接受 ssl_context，
+      要接 HTTPS 得自己包一层 SSL socket，反而更绕。）
+    """
+    try:
+        from cheroot.wsgi import Server as WSGIServer
+    except ImportError:
+        print("  ⚠️  未安装 cheroot，回退到 Flask 开发服务器。")
+        print("     建议执行： pip install cheroot")
+        return _run_dev_server(use_ssl, ssl_cert, ssl_key)
+
+    server = WSGIServer(
+        ("0.0.0.0", 5000),
+        app,
+        numthreads=8,          # 推理已串行，8 个线程足够接管页面请求
+        timeout=60,            # 连接闲置超时，及时回收 socket
+        shutdown_timeout=5,
+        server_name="yolo-safety-detection",
+    )
+    if use_ssl:
+        from cheroot.ssl.builtin import BuiltinSSLAdapter
+
+        server.ssl_adapter = BuiltinSSLAdapter(ssl_cert, ssl_key)
+
+    if use_ssl:
+        print("  正在启动 HTTPS 服务（cheroot + SSL）…")
+    else:
+        print("  正在启动 HTTP 服务（cheroot）…")
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\n  收到中断信号，正在停止…")
+    finally:
+        server.stop()
 
 
 if __name__ == "__main__":
@@ -536,6 +573,9 @@ if __name__ == "__main__":
     use_ssl = bool(ssl_cert and ssl_key)
     scheme = "https" if use_ssl else "http"
 
+    # APP_DEV_SERVER=1 可强制用 Flask 开发服务器（仅排查问题时用）
+    force_dev = os.environ.get("APP_DEV_SERVER", "").strip().lower() in ("1", "true", "yes")
+
     print("=" * 60)
     print("  安全帽/口罩佩戴检测系统  |  YOLOv8 + Flask")
     print(f"  计算设备: {device}")
@@ -546,7 +586,10 @@ if __name__ == "__main__":
     else:
         print("  模式: HTTP —— 手机端调摄像头受浏览器限制，")
         print("        需配 HTTPS 或用 chrome://flags 白名单，详见 README「六之四」")
-    print("  并发: 单线程串行（推理已加锁，多线程只会堆积等待）")
+    print(f"  服务器: {'Flask 开发服务器（仅调试）' if force_dev else 'cheroot（生产级）'}")
     print("=" * 60)
 
-    _run_dev_server(use_ssl, ssl_cert, ssl_key)
+    if force_dev:
+        _run_dev_server(use_ssl, ssl_cert, ssl_key)
+    else:
+        _run_prod_server(use_ssl, ssl_cert, ssl_key)
