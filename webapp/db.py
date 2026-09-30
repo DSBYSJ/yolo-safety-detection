@@ -48,6 +48,21 @@ def init_db() -> None:
     conn.commit()
 
 
+def close() -> None:
+    """关闭当前线程持有的连接。
+
+    连接是线程局部（thread-local）持有的，进程退出时由解释器回收；
+    但测试或需要释放文件句柄（例如删除数据库文件）时应显式调用，
+    否则 Windows 上会因文件被占用而无法删除。
+    """
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        finally:
+            _local.conn = None
+
+
 def insert_record(**kw) -> int:
     kw.setdefault("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     if isinstance(kw.get("details"), (list, dict)):

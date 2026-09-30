@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 import config
 import db
 import detector
+import fontutil
 import imageio_cn
 
 _lock = threading.Lock()
@@ -30,11 +31,7 @@ def _placeholder(text: str) -> np.ndarray:
     img = np.full((480, 720, 3), 28, dtype=np.uint8)
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     d = ImageDraw.Draw(pil)
-    try:
-        font = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 26)
-    except Exception:
-        font = ImageFont.load_default()
-    d.text((360, 220), text, fill=(180, 190, 205), font=font, anchor="mm")
+    d.text((360, 220), text, fill=(180, 190, 205), font=fontutil.get_font(26), anchor="mm")
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
 
@@ -54,9 +51,15 @@ def _publish(frame_or_jpeg_bytes, ok=None, counts=None, fps=None):
 
 
 def _save_record(counts: dict, annotated: np.ndarray, kind: str, tms: float) -> None:
+    """把当前帧落盘并写入一条检测记录。
+
+    必须先确认结果图真正写入成功再落库，否则记录会指向不存在的图片，
+    前端表现为裂图。写盘失败时直接跳过本次落库（不抛异常，避免中断抓帧循环）。
+    """
     name = f"camera_{uuid.uuid4().hex[:10]}.jpg"
     out = config.RESULT_DIR / name
-    imageio_cn.imwrite(out, annotated)
+    if not imageio_cn.imwrite(out, annotated):
+        return
     cols = detector.counts_to_db(counts)
     db.insert_record(
         source_type="camera",

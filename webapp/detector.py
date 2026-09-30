@@ -14,9 +14,9 @@ from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
 import config
+import fontutil
 
 _model_cache: dict = {}
-_font_cache = None
 
 # 绘制颜色（BGR）：合规 = 绿色系，违规 = 红色系
 COLORS = {
@@ -32,17 +32,8 @@ class ModelMissingError(RuntimeError):
 
 
 def _font():
-    global _font_cache
-    if _font_cache is None:
-        for name in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf", "Arial.ttf"):
-            try:
-                _font_cache = ImageFont.truetype(name, 18)
-                break
-            except Exception:
-                continue
-        if _font_cache is None:
-            _font_cache = ImageFont.load_default()
-    return _font_cache
+    """标签绘制用中文字体（跨平台，见 fontutil）。"""
+    return fontutil.get_font(18)
 
 
 def model_path(kind: str) -> Path:
@@ -68,7 +59,6 @@ def get_model(kind: str) -> YOLO:
     if kind in _model_cache:
         return _model_cache[kind]
     model = YOLO(str(model_path(kind)))
-    model_path_cached = model_path(kind)
     _model_cache[kind] = model
     return model
 

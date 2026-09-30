@@ -48,10 +48,15 @@
     │   ├── video_jobs.py          # 视频后台检测任务（含 H.264 转码）
     │   ├── train_manager.py       # 在线训练/评估任务管理
     │   ├── db.py                  # SQLite 记录管理
+    │   ├── imageio_cn.py          # 图像读写（兼容非 ASCII 路径）
+    │   ├── fontutil.py            # 跨平台中文字体加载
     │   ├── templates/             # 7 个页面模板
     │   └── static/                # 样式 / ECharts / 检测结果图
     ├── scripts/
     │   └── make_demo_video.py     # 生成演示视频（用于视频检测测试）
+    ├── tests/
+    │   ├── test_unit.py           # 离线单元测试（35 项，无需服务/GPU）
+    │   └── regression.py          # 端到端回归测试（21 项，需服务运行中）
     ├── requirements.txt
     └── README.md
 
@@ -119,7 +124,21 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 
 ## 六之二、功能测试
 
-### 自动化回归测试
+测试分两层：**离线单元测试**不依赖服务与 GPU，可随时运行；**端到端回归测试**需要服务已启动。
+
+### 1. 离线单元测试（35 项）
+
+    python tests/test_unit.py
+
+覆盖 `imageio_cn`（含中文路径读写）、`db`（增删查与统计聚合）、
+`detector` 纯函数（kinds 过滤、类别计数映射）、`fontutil`（跨平台字体）、
+`config`（模型类别与 `data.yaml` 一致性校验），共 35 项：
+
+    ====================================================================
+    单元测试结果: 35/35 通过
+    ====================================================================
+
+### 2. 端到端回归测试（21 项）
 
 服务启动后，另开一个终端执行：
 
@@ -135,6 +154,15 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 可选参数：
 
     python tests/regression.py --base http://127.0.0.1:5000 --conf 0.25
+
+> 回归测试会向数据库写入若干条测试记录（结果图也会落盘到 `static/results/`）。
+> 若希望保持记录干净，测试后可在「检测记录」页批量删除。
+
+### 3. 持续集成
+
+`.github/workflows/ci.yml` 在每次 push / PR 时自动执行：
+Python 3.10 与 3.12 双版本下进行**语法检查 → 模块导入校验 → 离线单元测试 → 服务冒烟测试**
+（启动服务并逐一探测 9 个页面/接口的 HTTP 状态）。
 
 ### 手工测试要点
 
@@ -173,12 +201,29 @@ OpenCV 的 `cv2.imread` / `cv2.imwrite` 在 Windows 下遇到**中文路径会�
 底层用 `np.fromfile` + `cv2.imdecode` / `cv2.imencode` + `Path.write_bytes` 绕开路径问题，
 对 ASCII 路径同样适用。`cv2.VideoWriter` 不受此影响（`isOpened()` 会真实反馈）。
 
+**写图必须检查返回值**：`imageio_cn.imwrite` 返回 `bool`，调用方需据此决定是否落库/返回成功。
+`camera.py` 与 `app.py` 均已按「写盘失败则不落库、不报成功」处理，
+避免出现「接口成功但结果图不存在」的裂图问题。
+
+### 中文字体统一走 `webapp/fontutil.py`
+
+`cv2.putText` 不支持中文，检测标签与摄像头占位提示都改用 PIL 绘制，需要显式指定字体文件。
+早期实现硬编码了 `C:/Windows/Fonts/msyh.ttc`，在 Linux / macOS 上会静默回退到 PIL 默认字体，
+导致**中文全部渲染成方块**。现统一由 `fontutil.get_font(size)` 提供，
+按「Windows → macOS → Linux」顺序探测候选字体并按字号缓存；
+全部未命中时向 `stderr` 打印一次性告警，便于定位。
+
+    import fontutil
+    font = fontutil.get_font(18)
+    fontutil.available()   # 返回实际命中的字体路径，可用于启动自检
+
 ## 八、常见问题
 
 | 问题 | 处理 |
 | --- | --- |
 | 提示未找到模型权重 | 先训练，或将 best.pt 复制为 models/helmet.pt / models/mask.pt |
 | 检测完成但结果图显示裂图 | 确认结果图已落盘（`static/results/`）。若目录为空，检查是否误用了 `cv2.imwrite`，见「七、开发注意事项」 |
+| 检测框标签中文显示为方块 | 系统缺少中文字体，见「七、开发注意事项 → 中文字体」。Linux 可装 `fonts-wqy-zenhei` 或 Noto Sans CJK |
 | 视频检测结果无法播放 | 系统会自动调用 ffmpeg（imageio-ffmpeg）转 H.264，确认依赖已安装；也可点「下载结果视频」本地播放 |
 | 摄像头黑屏/未检测到 | 检查设备占用（其他软件），或修改 webapp/config.py 的 CAMERA_INDEX |
 | 训练显存不足 | 调小 batch（如 8）或 imgsz（如 512） |
