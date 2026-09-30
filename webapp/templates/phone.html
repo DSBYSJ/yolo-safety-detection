@@ -61,6 +61,17 @@
       ③ Chrome 里打开 <span class="mono">chrome://flags/#unsafely-treat-insecure-origin-as-secure</span>，
       把本站地址加入白名单后重启浏览器（仅调试用）。
     </div>
+    <div class="field-hint" id="certTip" hidden>
+      <b class="accent">打不开页面 / 一直转圈？</b>
+      服务用的是<b>自签证书</b>，手机浏览器默认不信任它，会在握手阶段直接断开
+      （这时页面上不会有任何提示，看起来就像「网络不通」）。<br>
+      <b>解决：第一次访问时在警告页点「继续前往」</b>——<br>
+      ① 出现「您的连接不是私密连接」时，点 <b>「高级」</b>；<br>
+      ② 再点 <b>「继续前往 10.143.5.86（不安全）」</b>；<br>
+      ③ 之后本机浏览器会记住这个例外，同一地址不再提示。<br>
+      <span class="mono">若警告页根本不出现、直接超时，请先在手机浏览器地址栏
+      手动输入 https://10.143.5.86:5000/phone ，并确认手机与电脑在同一 Wi-Fi。</span>
+    </div>
   </div>
 </div>
 {% endblock %}

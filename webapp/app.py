@@ -516,6 +516,40 @@ def _run_dev_server(use_ssl, ssl_cert, ssl_key):
         app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)
 
 
+def _quiet_tls_handshake_noise(server):
+    """压掉 cheroot 的 TLS 握手失败噪音。
+
+    背景：服务用自签证书，手机浏览器首次访问会因「证书不受信任」在握手
+    阶段直接断开；浏览器反复重试时，cheroot 会把每一次失败都打成一整段
+    traceback（还夹带 WinError 10038「在一个非套接字上尝试了一个操作」
+    这类善后异常），把真正有用的日志淹没。
+
+    为什么不能用 logging 拦截：这些消息不走 logging，而是 cheroot 内部
+    直接调用 server.error_log() 写出去的，所以只能覆盖该方法。
+    error_log 的源码注释明确写着「Override this in subclasses as desired」，
+    属于官方预留的扩展点，覆盖它是稳妥做法。
+
+    只过滤「已知的、由客户端引起的」握手噪音；其它错误照常输出，
+    避免把真正的服务端故障一起吞掉。
+    """
+    _NOISE = (
+        "peer dropped the TLS connection suddenly",   # 客户端拒绝自签证书
+        "attempted to speak plain HTTP",              # 用 http:// 打了 https 端口
+        "[WinError 10038]",                           # 上述失败后清理 socket 的善后异常
+        "The handshake operation timed out",
+        "UNEXPECTED_EOF_WHILE_READING",
+    )
+
+    def _filtered(msg="", level=20, traceback=False):  # noqa: A002
+        text = str(msg)
+        if any(k in text for k in _NOISE):
+            return
+        server.orig_error_log(msg, level=level, traceback=traceback)
+
+    server.orig_error_log = server.error_log
+    server.error_log = _filtered
+
+
 def _run_prod_server(use_ssl, ssl_cert, ssl_key):
     """cheroot 生产级 WSGI 服务器（默认启动方式）。
 
@@ -544,6 +578,7 @@ def _run_prod_server(use_ssl, ssl_cert, ssl_key):
         shutdown_timeout=5,
         server_name="yolo-safety-detection",
     )
+    _quiet_tls_handshake_noise(server)
     if use_ssl:
         from cheroot.ssl.builtin import BuiltinSSLAdapter
 
@@ -551,6 +586,7 @@ def _run_prod_server(use_ssl, ssl_cert, ssl_key):
 
     if use_ssl:
         print("  正在启动 HTTPS 服务（cheroot + SSL）…")
+        print("  提示：手机首次访问会提示证书不受信任，点「继续前往」即可。")
     else:
         print("  正在启动 HTTP 服务（cheroot）…")
     try:
