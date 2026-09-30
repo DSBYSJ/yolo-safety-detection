@@ -527,6 +527,11 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .phone-stage video {
   width: 100%; height: 100%; object-fit: contain; display: block;
 }
+/* 检测框叠加层：与 video 完全重合，只负责画框，不接收指针事件 */
+.phone-stage canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none; display: block;
+}
 .phone-stage img { width: 100%; height: 100%; object-fit: contain; }
 .phone-hint {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;

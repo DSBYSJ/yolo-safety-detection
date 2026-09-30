@@ -8,7 +8,10 @@
   <div class="card">
     <div class="phone-stage">
       <video id="cam" playsinline autoplay muted></video>
-      <img id="annotated" alt="检测画面" hidden>
+      <!-- 检测框叠加层：与 video 同样位置、同样尺寸，
+           每帧按检测结果重绘。用 canvas 而不回传标注图，可省一次
+           往返与一次 JPEG 编解码，画框与画面几乎零延迟。 -->
+      <canvas id="overlay" hidden></canvas>
       <div class="phone-hint" id="hint">点击下方按钮启动摄像头</div>
       <div class="phone-fps" id="fpsChip" hidden>-- fps</div>
     </div>
@@ -44,6 +47,7 @@
     <div class="note-box">
       <ul>
         <li><b>画面完全在本机处理</b>：手机摄像头画面逐帧发送到运行本系统的电脑/服务器推理，不经过第三方；</li>
+        <li>检测到目标时会在画面上<b>直接叠加检测框</b>（绿框=合规，红框=违规）；</li>
         <li>为保持画面流畅与稳定，检测帧率约为 <b>4 帧/秒</b>，不影响识别效果；</li>
         <li>点「抓拍存档」才会把当前画面写入检测记录，日常预览不留痕；</li>
         <li>若提示无法启动摄像头，通常是浏览器要求 <b>HTTPS 或 localhost</b> 才允许访问摄像头，详见下方提示。</li>
@@ -67,7 +71,7 @@ const CN = {helmet:'安全帽', head:'未戴安全帽', mask:'口罩', face:'未
 const CN_BAD = {head:'未戴安全帽', face:'未戴口罩'};
 
 const cam = document.getElementById('cam');
-const annotated = document.getElementById('annotated');
+const overlay = document.getElementById('overlay');
 const hint = document.getElementById('hint');
 const fpsChip = document.getElementById('fpsChip');
 const btnStart = document.getElementById('btnStart');
@@ -116,7 +120,7 @@ async function start() {
 
   cam.srcObject = stream;
   cam.hidden = false;
-  annotated.hidden = true;
+  overlay.hidden = false;
   hint.style.display = 'none';
   running = true;
   frames = 0; fpsT0 = performance.now();
@@ -141,7 +145,8 @@ function stop() {
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   cam.srcObject = null;
   cam.hidden = true;
-  annotated.hidden = true;
+  overlay.hidden = true;
+  clearOverlay();
   fpsChip.hidden = true;
   showHint('已停止。点击「启动摄像头」重新开始');
   btnStart.disabled = false;
@@ -232,6 +237,7 @@ async function detectOnce() {
     const d = await r.json();
     if (!d.ok) { showHint(d.error || '检测失败'); return null; }
     renderCounts(d);
+    drawOverlay(d);
     return d;
   } catch (e) {
     // AbortError = 超时主动取消，正常路径，不算异常
@@ -273,6 +279,84 @@ function renderCounts(d) {
     html += `<span class="chip chip-ok">✓ 全部合规</span>`;
   }
   document.getElementById('counters').innerHTML = html;
+}
+
+/* ---------- 检测框叠加绘制 ----------
+   在 canvas 上按检测结果重画检测框，叠在 video 之上。
+   坐标换算：服务端返回的 box 是「上传帧」的像素坐标（长边 960），
+   而 video 在页面里是 object-fit: contain 显示，两边比例与留白都不同，
+   所以要用与 CSS 相同的 fit 规则反算，否则框会整体偏移。
+
+   与画面同步的代价只有一次 setTimeout(0) 级别的重绘，几乎无延迟；
+   比让服务端回传标注图省一次编解码和一次网络往返。 */
+const CN_COLOR = {
+  helmet: '#4ade80', head: '#f87171', mask: '#4ade80', face: '#f87171',
+};
+let _oc = null;
+
+function fitRect(vw, vh, cw, ch) {
+  /* 复现 object-fit: contain —— 返回画面在容器内的实际绘制区域 */
+  const s = Math.min(cw / vw, ch / vh);
+  const w = vw * s, h = vh * s;
+  return { x: (cw - w) / 2, y: (ch - h) / 2, w: w, h: h };
+}
+
+function drawOverlay(d) {
+  if (!overlay || !d || !d.size) return;
+  const [fw, fh] = d.size;                 // 上传帧的像素尺寸
+  if (!fw || !fh) return;
+
+  // 页面刚显示或仍在布局时 clientWidth 可能为 0，
+  // 此时算出来的比例会是 Infinity/NaN，框会画到画布外。
+  // 宁可跳过这一帧，等下一次布局完成再画。
+  const cw = overlay.clientWidth, ch = overlay.clientHeight;
+  if (!cw || !ch) return;
+
+  // canvas 用设备像素比渲染，避免高分屏下发虚
+  const dpr = window.devicePixelRatio || 1;
+  if (overlay.width !== Math.round(cw * dpr) || overlay.height !== Math.round(ch * dpr)) {
+    overlay.width = Math.round(cw * dpr);
+    overlay.height = Math.round(ch * dpr);
+  }
+  if (!_oc) _oc = overlay.getContext('2d');
+  _oc.setTransform(dpr, 0, 0, dpr, 0, 0);
+  _oc.clearRect(0, 0, cw, ch);
+
+  const dets = d.detections || [];
+  if (!dets.length) return;
+
+  const r = fitRect(fw, fh, cw, ch);
+  const kx = r.w / fw, ky = r.h / fh;      // 帧像素 -> 容器 CSS 像素
+
+  _oc.lineWidth = 2;
+  _oc.font = '600 12px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+  _oc.textBaseline = 'alphabetic';
+
+  for (const det of dets) {
+    const [x1, y1, x2, y2] = det.box || [];
+    if (x2 == null) continue;
+    const bx = r.x + x1 * kx, by = r.y + y1 * ky;
+    const bw = (x2 - x1) * kx, bh = (y2 - y1) * ky;
+    const color = CN_COLOR[det.class] || '#facc15';
+
+    _oc.strokeStyle = color;
+    _oc.strokeRect(bx, by, bw, bh);
+
+    // 标签贴框上沿；顶到画面外就翻到框内侧
+    const label = `${det.class_cn || det.class} ${(det.conf || 0).toFixed(2)}`;
+    const tw = _oc.measureText(label).width;
+    let ly = by - 4;
+    if (ly - 14 < 0) ly = by + 16;
+    _oc.fillStyle = color;
+    _oc.fillRect(bx, ly - 13, tw + 10, 15);
+    _oc.fillStyle = '#0b1220';
+    _oc.fillText(label, bx + 5, ly - 2);
+  }
+}
+
+function clearOverlay() {
+  if (!overlay || !_oc) return;
+  _oc.clearRect(0, 0, overlay.clientWidth, overlay.clientHeight);
 }
 
 /* ---------- 抓拍存档（这一帧才落库） ---------- */

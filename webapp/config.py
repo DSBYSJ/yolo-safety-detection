@@ -73,12 +73,16 @@ MAX_CONTENT_LENGTH = 300 * 1024 * 1024  # 单文件上传上限 300MB
 #   CAMERA_INDEX = 1/2 是外接 USB 摄像头或虚拟摄像头
 #   不确定时先运行 `python scripts/list_cameras.py` 枚举本机设备。
 #
+#   ⚠️ 本机实测：索引 0 打不开（MSMF 报 can't grab frame），
+#      真实摄像头在索引 1，所以默认值取 1。
+#      换机器或插拔设备后索引可能变，务必先跑上面的枚举脚本确认。
+#
 # 方式二：网络视频流（手机 App「IP Webcam」、网络摄像机、RTSP 摄像头等）
 #   CAMERA_SOURCE=rtsp://user:pass@192.168.1.100:554/h264
 #   CAMERA_SOURCE=http://192.168.1.100:8080/video
 #   注意：设了 CAMERA_SOURCE 后 CAMERA_INDEX 与分辨率设置会被忽略，
 #   因为网络流的分辨率由推流端决定。
-CAMERA_INDEX = _env_int("CAMERA_INDEX", 0)
+CAMERA_INDEX = _env_int("CAMERA_INDEX", 1)
 CAMERA_FRAME_WIDTH = _env_int("CAMERA_FRAME_WIDTH", 1280)
 CAMERA_FRAME_HEIGHT = _env_int("CAMERA_FRAME_HEIGHT", 720)
 CAMERA_RECORD_INTERVAL = 5.0  # 有目标时的最小落库间隔（秒），防止记录爆炸

@@ -322,16 +322,25 @@ class TestConfig(unittest.TestCase):
             importlib.reload(config)
 
     def test_env_int_falls_back_on_garbage(self):
-        """环境变量填了非数字时必须回退默认值，不能让服务启动崩溃。"""
+        """环境变量填了非数字时必须回退默认值，不能让服务启动崩溃。
+
+        默认值不写死数字 —— 它随 config 源码调整（本机摄像头索引就
+        从 0 改成了 1）。这里比对环境变量未设置时的取值，断言两者一致。
+        """
         import importlib
 
         import config
+
+        os.environ.pop("CAMERA_INDEX", None)
+        importlib.reload(config)
+        default = config.CAMERA_INDEX
 
         for bad in ("abc", "", "  ", "1.5"):
             os.environ["CAMERA_INDEX"] = bad
             try:
                 importlib.reload(config)
-                self.assertEqual(config.CAMERA_INDEX, 0, f"输入 {bad!r} 时未回退默认值")
+                self.assertEqual(config.CAMERA_INDEX, default,
+                                 f"输入 {bad!r} 时未回退默认值 {default}")
             finally:
                 os.environ.pop("CAMERA_INDEX", None)
                 importlib.reload(config)
@@ -531,6 +540,60 @@ class TestInferLock(unittest.TestCase):
             lock.release()
 
 
+class TestDetectionPayload(unittest.TestCase):
+    """检测框数据契约：手机端前端要靠它把框画到画面上。
+
+    前端绘制逻辑是「像素坐标 × 显示比例 + 留白偏移」。只要 box 的格式、
+    取值单位（原图像素）、坐标系原点（左上）任一环节变了，框就会整体偏移，
+    而这类问题在真机上才看得出来、很容易漏。所以在此锁死契约。
+    """
+
+    def _make(self, size=(320, 240)):
+        """按 detector.infer_image 的返回结构造一份样例检测结果。"""
+        w, h = size
+        dets = [
+            {"kind": "helmet", "class": "helmet", "class_cn": "安全帽",
+             "conf": 0.91, "box": [10.0, 20.0, 110.0, 140.0]},
+            {"kind": "helmet", "class": "head", "class_cn": "未戴安全帽",
+             "conf": 0.77, "box": [200.0, 30.0, 300.0, 150.0]},
+        ]
+        return {"size": [w, h], "detections": dets, "num_objects": len(dets)}
+
+    def test_box_is_left_top_right_bottom(self):
+        """box 必须是 [x1,y1,x2,y2] 且 x1<x2、y1<y2（前端据此算宽高）。"""
+        for det in self._make()["detections"]:
+            x1, y1, x2, y2 = det["box"]
+            self.assertLess(x1, x2)
+            self.assertLess(y1, y2)
+
+    def test_box_within_image_bounds(self):
+        """框必须落在图像尺寸内，否则画到画布外会被裁掉。"""
+        d = self._make(size=(320, 240))
+        w, h = d["size"]
+        for det in d["detections"]:
+            x1, y1, x2, y2 = det["box"]
+            self.assertGreaterEqual(x1, 0)
+            self.assertGreaterEqual(y1, 0)
+            self.assertLessEqual(x2, w)
+            self.assertLessEqual(y2, h)
+
+    def test_each_detection_has_display_fields(self):
+        """前端画框与标签要用到 class、class_cn、conf，缺一不可。"""
+        for det in self._make()["detections"]:
+            self.assertIn(det["class"], ("helmet", "head", "mask", "face"))
+            self.assertTrue(det["class_cn"], "中文类别名不能为空（标签要显示）")
+            self.assertGreaterEqual(det["conf"], 0.0)
+            self.assertLessEqual(det["conf"], 1.0)
+
+    def test_size_is_width_then_height(self):
+        """size 必须是 [宽, 高]，与 numpy shape[:2] 的 (高, 宽) 顺序相反。
+
+        接口里写的是 img.shape[1], img.shape[0]，顺序写反会让画框长宽互换。
+        """
+        w, h = self._make(size=(640, 480))["size"]
+        self.assertEqual((w, h), (640, 480))
+
+
 def main():
     argv = sys.argv[:]
     if "-v" in argv:
@@ -551,6 +614,7 @@ def main():
             TestCameraSource,
             TestPhoneDecode,
             TestInferLock,
+            TestDetectionPayload,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)

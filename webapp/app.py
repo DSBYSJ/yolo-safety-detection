@@ -334,6 +334,9 @@ def api_phone_detect():
         "num_objects": sum(counts.values()),
         "time_ms": tms,
         "size": [img.shape[1], img.shape[0]],
+        # 检测框坐标（原图像素）。前端据 size 换算成显示比例后叠加绘制，
+        # 这样画框与画面严格同步 —— 服务端不需要回传标注图（省带宽、免二次编码）。
+        "detections": dets,
     }
 
     # 只在用户点「抓拍存档」时落盘 + 落库
