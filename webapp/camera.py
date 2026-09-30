@@ -27,11 +27,15 @@ _state = {
 }
 
 
-def _placeholder(text: str) -> np.ndarray:
+def _placeholder(text: str, size: int = 26) -> np.ndarray:
+    """生成占位画面。text 支持多行（用 \\n 分隔），整体居中绘制。"""
     img = np.full((480, 720, 3), 28, dtype=np.uint8)
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     d = ImageDraw.Draw(pil)
-    d.text((360, 220), text, fill=(180, 190, 205), font=fontutil.get_font(26), anchor="mm")
+    d.multiline_text(
+        (360, 240), text, fill=(180, 190, 205),
+        font=fontutil.get_font(size), anchor="mm", align="center", spacing=10,
+    )
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
 
@@ -82,7 +86,14 @@ def _worker() -> None:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_FRAME_WIDTH)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_FRAME_HEIGHT)
             if not cap.isOpened():
-                _publish(_placeholder("未检测到摄像头 / 摄像头被占用"), ok=False, counts={})
+                _publish(
+                    _placeholder(
+                        f"未检测到摄像头（索引 {config.CAMERA_INDEX}）\n"
+                        f"请运行 scripts/list_cameras.py 查看可用设备",
+                        size=22,
+                    ),
+                    ok=False, counts={},
+                )
                 time.sleep(5.0)
                 continue
             _publish(_placeholder("摄像头已连接，正在启动检测..."), ok=True)

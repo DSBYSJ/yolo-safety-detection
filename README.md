@@ -53,7 +53,8 @@
     │   ├── templates/             # 7 个页面模板
     │   └── static/                # 样式 / ECharts / 检测结果图
     ├── scripts/
-    │   └── make_demo_video.py     # 生成演示视频（用于视频检测测试）
+    │   ├── make_demo_video.py     # 生成演示视频（用于视频检测测试）
+    │   └── list_cameras.py        # 枚举本机摄像头索引（接入手机虚拟摄像头时用）
     ├── tests/
     │   ├── test_unit.py           # 离线单元测试（35 项，无需服务/GPU）
     │   └── regression.py          # 端到端回归测试（21 项，需服务运行中）
@@ -118,9 +119,68 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 
 - 首次使用请先训练，或把训练好的 helmet.pt / mask.pt 放入 models/ 目录；
 - `webapp/app.py` 内已把工作目录处理为绝对路径，从任何目录启动均可；
-- 摄像头检测需本机连接摄像头设备；
+- 摄像头检测需本机连接摄像头设备（含虚拟摄像头，见「六之三」）；
 - 停止服务：终端按 `Ctrl+C`；
 - 生产环境可用 `waitress-serve --host 0.0.0.0 --port 5000 webapp.app:app` 部署。
+
+### 可用的环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CAMERA_INDEX` | `0` | 摄像头设备索引。接入手机虚拟摄像头时通常要改成 1 或 2 |
+| `CAMERA_FRAME_WIDTH` | `1280` | 摄像头采集宽度 |
+| `CAMERA_FRAME_HEIGHT` | `720` | 摄像头采集高度 |
+| `SECRET_KEY` | 开发默认值 | Flask 会话密钥，生产环境务必注入 |
+
+    # 把摄像头切到索引 1 的设备
+    CAMERA_INDEX=1 python webapp/app.py
+    # Windows CMD
+    set CAMERA_INDEX=1 && python webapp/app.py
+
+## 六之三、使用手机摄像头做实时监测
+
+手机的摄像头**不能直接被 OpenCV 读取** —— `cv2.VideoCapture` 只认系统里注册的
+视频设备（Windows 走 DirectShow，Linux 走 V4L2）。所以需要先用工具把手机
+「伪装」成一个虚拟摄像头，之后本项目**无需改动任何代码**，只需指定设备索引。
+
+### 方案 A：DroidCam / Iriun Webcam（推荐，零改码）
+
+1. 手机安装 **DroidCam**（或 Iriun Webcam），电脑安装对应客户端；
+2. 二者连接（Wi-Fi 填手机显示的 IP:端口；或 USB 走 ADB，延迟更低）；
+3. 连接成功后电脑会多出一个虚拟摄像头设备；
+4. 枚举设备索引，确认新设备是几号：
+
+       python scripts/list_cameras.py
+
+5. 用探到的索引启动：
+
+       CAMERA_INDEX=1 python webapp/app.py
+
+参考延迟：720p < 100ms，1080p 约 200ms（5GHz Wi-Fi 或 USB）。
+注意 DroidCam 免费版画面带水印且分辨率受限。
+
+### 方案 B：Android 14+ / Windows 11 原生 UVC
+
+较新机型在「开发者选项」中开启 USB 摄像头类功能后，插上 USB 即被系统识别为
+标准摄像头，无需第三方 App。同样用 `list_cameras.py` 确认索引即可。
+
+### 方案 C：IP Webcam + RTSP（需改代码，支持多机）
+
+手机装 IP Webcam 后提供 RTSP/HTTP 流地址。此方案要把 `camera.py` 中的
+`cv2.VideoCapture(config.CAMERA_INDEX)` 改为传入流地址字符串：
+
+    cap = cv2.VideoCapture("http://192.168.1.100:8080/video")
+
+好处是可同时接入多台手机，代价是需自行处理 RTSP 断流重连。
+
+### 常见问题
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 画面提示「未检测到摄像头（索引 N）」 | 索引不对。运行 `scripts/list_cameras.py` 确认正确索引 |
+| 改了 `CAMERA_INDEX` 但没生效 | 抓帧线程已启动时不会重新打开设备，**需重启服务** |
+| 虚拟摄像头连接成功但画面黑屏 | 先确认客户端预览正常；再试 `list_cameras.py --backend dshow` |
+| 手机掉线后画面不恢复 | 抓帧线程每 5 秒自动重连，确认手机端 App 仍在运行、IP 未变 |
 
 ## 六之二、功能测试
 

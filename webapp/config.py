@@ -1,6 +1,25 @@
 # -*- coding: utf-8 -*-
-"""全局配置：路径、模型类别、上传限制等"""
+"""全局配置：路径、模型类别、上传限制等
+
+部分配置支持环境变量覆盖，便于在不改动源码的前提下切换运行环境，
+例如把摄像头从笔记本内置镜头切到手机虚拟摄像头（DroidCam / Iriun）：
+
+    CAMERA_INDEX=1 python webapp/app.py
+"""
+import os
 from pathlib import Path
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取整数环境变量，解析失败时回退默认值（不让配置错误导致启动崩溃）。"""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return default
+
 
 WEBAPP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = WEBAPP_DIR.parent
@@ -39,7 +58,12 @@ ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv"}
 MAX_CONTENT_LENGTH = 300 * 1024 * 1024  # 单文件上传上限 300MB
 
 # 摄像头实时检测
-CAMERA_INDEX = 0
-CAMERA_FRAME_WIDTH = 1280
-CAMERA_FRAME_HEIGHT = 720
+# CAMERA_INDEX 为 OpenCV VideoCapture 的设备索引（整数）：
+#   0 = 通常是笔记本内置摄像头
+#   1/2 = 外接 USB 摄像头，或 DroidCam / Iriun 等虚拟摄像头
+# 不确定时先运行 `python scripts/list_cameras.py` 枚举本机设备。
+# 可用环境变量覆盖：CAMERA_INDEX=1 python webapp/app.py
+CAMERA_INDEX = _env_int("CAMERA_INDEX", 0)
+CAMERA_FRAME_WIDTH = _env_int("CAMERA_FRAME_WIDTH", 1280)
+CAMERA_FRAME_HEIGHT = _env_int("CAMERA_FRAME_HEIGHT", 720)
 CAMERA_RECORD_INTERVAL = 5.0  # 有目标时的最小落库间隔（秒），防止记录爆炸

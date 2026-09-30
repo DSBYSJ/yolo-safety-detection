@@ -299,6 +299,41 @@ class TestConfig(unittest.TestCase):
     def test_upload_limit_positive(self):
         self.assertGreater(self.c.MAX_CONTENT_LENGTH, 0)
 
+    def test_camera_index_defaults_to_int(self):
+        """CAMERA_INDEX 必须是 int（OpenCV 设备索引），非法值要能兜底。"""
+        import config
+
+        self.assertIsInstance(config.CAMERA_INDEX, int)
+        self.assertGreaterEqual(config.CAMERA_INDEX, 0)
+
+    def test_env_int_parses_valid(self):
+        import importlib
+
+        import config
+
+        os.environ["CAMERA_INDEX"] = "2"
+        try:
+            importlib.reload(config)
+            self.assertEqual(config.CAMERA_INDEX, 2)
+        finally:
+            os.environ.pop("CAMERA_INDEX", None)
+            importlib.reload(config)
+
+    def test_env_int_falls_back_on_garbage(self):
+        """环境变量填了非数字时必须回退默认值，不能让服务启动崩溃。"""
+        import importlib
+
+        import config
+
+        for bad in ("abc", "", "  ", "1.5"):
+            os.environ["CAMERA_INDEX"] = bad
+            try:
+                importlib.reload(config)
+                self.assertEqual(config.CAMERA_INDEX, 0, f"输入 {bad!r} 时未回退默认值")
+            finally:
+                os.environ.pop("CAMERA_INDEX", None)
+        importlib.reload(config)
+
 
 def main():
     argv = sys.argv[:]
