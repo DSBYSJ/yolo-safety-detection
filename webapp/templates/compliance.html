@@ -30,6 +30,61 @@
   </div>
 </div>
 
+<!-- ================= 按人判定的佩戴合规 ================= -->
+<div class="card">
+  <div class="card-head">
+    <h2>按人判定的佩戴合规</h2>
+    <span class="hint" id="pcRange">近 30 天</span>
+  </div>
+  <p class="hint pc-lead">
+    安全帽 / 口罩的检测框会按<strong>空间重叠</strong>归属到具体的人头上，
+    因此这里统计的是「<strong>哪个人</strong>没戴」，而不只是「本帧有几个没戴」。
+    <br>
+    分母只计入<strong>确实检测到该类装备</strong>的次数 ——
+    画面没拍到、模型漏检时记为「无信息」，<strong>不计入违规</strong>。
+  </p>
+
+  <div class="stat-grid pc-grid">
+    <div class="stat-card">
+      <span class="stat-label">已判定人次</span>
+      <b class="stat-val" id="pcSeen">-</b>
+      <span class="stat-sub">带装备信息的识别次数</span>
+    </div>
+    <div class="stat-card ok">
+      <span class="stat-label">安全帽违规率</span>
+      <b class="stat-val" id="pcHatRate">-</b>
+      <span class="stat-sub">未戴 <i id="pcHatBad">-</i> / 判定 <i id="pcHatKnown">-</i></span>
+    </div>
+    <div class="stat-card warn">
+      <span class="stat-label">口罩违规率</span>
+      <b class="stat-val" id="pcMaskRate">-</b>
+      <span class="stat-sub">未戴 <i id="pcMaskBad">-</i> / 判定 <i id="pcMaskKnown">-</i></span>
+    </div>
+    <div class="stat-card bad">
+      <span class="stat-label">存在违规的人</span>
+      <b class="stat-val" id="pcViolators">-</b>
+      <span class="stat-sub">近 30 天至少 1 次未佩戴</span>
+    </div>
+  </div>
+
+  <div class="card-head"><h2>按人明细（违规次数由多到少）</h2></div>
+  <div class="tbl-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>人员</th><th>识别次数</th>
+          <th>安全帽</th><th>未戴帽</th><th>帽子违规率</th>
+          <th>口罩</th><th>未戴口罩</th><th>口罩违规率</th>
+          <th>最近出现</th>
+        </tr>
+      </thead>
+      <tbody id="pcBody">
+        <tr><td colspan="9" class="tbl-empty">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <div class="chk-grid">
   <div class="card">
     <div class="card-head"><h2>安全帽佩戴（独立统计）</h2></div>
@@ -134,6 +189,66 @@ async function loadSummary() {
     ['姓名', '识别次数', '平均相似度', '最近出现']);
   renderRank('tbTemp', d.persons.temp, ['person_name', 'n', 'avg_score', 'last_at'],
     ['临时编号', '出现次数', '最高相似度', '最近出现']);
+
+  renderPersonCompliance(d.compliance_overview, d.person_compliance);
+}
+
+/* ---------- 按人判定的佩戴合规 ---------- */
+/** 违规率显示：分母为 0 时显示「—」而不是 0%。
+
+    这一点很重要：从没拍到过帽子 ≠ 100% 合规。
+    显示成 0% 会让人误以为「这个人戴得很好」，
+    实际是「我们不知道」。 */
+function pct(rate) {
+  if (rate === null || rate === undefined) return '—';
+  return (rate * 100).toFixed(1) + '%';
+}
+
+function renderPersonCompliance(ov, rows) {
+  ov = ov || {};
+  const days = ov.days || 30;
+  document.getElementById('pcRange').textContent = `近 ${days} 天`;
+
+  document.getElementById('pcSeen').textContent = ov.seen_n || 0;
+  document.getElementById('pcHatRate').textContent = pct(ov.hat_rate);
+  document.getElementById('pcHatBad').textContent = ov.hat_bad || 0;
+  document.getElementById('pcHatKnown').textContent = ov.hat_known || 0;
+  document.getElementById('pcMaskRate').textContent = pct(ov.mask_rate);
+  document.getElementById('pcMaskBad').textContent = ov.mask_bad || 0;
+  document.getElementById('pcMaskKnown').textContent = ov.mask_known || 0;
+
+  const bad = (rows || []).filter(r => (r.bad_total || 0) > 0).length;
+  document.getElementById('pcViolators').textContent = bad;
+
+  const tb = document.getElementById('pcBody');
+  if (!rows || !rows.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="tbl-empty">暂无数据 —— ' +
+      '开启人脸识别后，佩戴情况才会按人记录</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = rows.map(r => {
+    const name = r.is_temp ? esc(r.person_name) + ' <span class="badge">访客</span>'
+                           : '<b>' + esc(r.person_name) + '</b>';
+    // 违规次数用红色高亮，一眼看出谁需要重点关注
+    const hatBad = r.hat_bad > 0 ? `<span class="txt-red">${r.hat_bad}</span>` : '0';
+    const maskBad = r.mask_bad > 0 ? `<span class="txt-red">${r.mask_bad}</span>` : '0';
+    const hatRate = r.hat_rate > 0 ? `<span class="txt-red">${pct(r.hat_rate)}</span>`
+                                   : pct(r.hat_rate);
+    const maskRate = r.mask_rate > 0 ? `<span class="txt-red">${pct(r.mask_rate)}</span>`
+                                     : pct(r.mask_rate);
+    return `<tr>
+      <td>${name}</td>
+      <td>${r.seen_n}</td>
+      <td>${r.hat_ok}</td>
+      <td>${hatBad}</td>
+      <td>${hatRate}</td>
+      <td>${r.mask_ok}</td>
+      <td>${maskBad}</td>
+      <td>${maskRate}</td>
+      <td>${esc(r.last_at || '')}</td>
+    </tr>`;
+  }).join('');
 }
 
 function renderRank(tbodyId, rows, keys, heads) {

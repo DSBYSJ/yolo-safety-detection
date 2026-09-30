@@ -990,6 +990,460 @@ class TestFaceAnnotation(unittest.TestCase):
             self.fail(f"异常框导致绘制崩溃: {e}")
 
 
+class TestPhoneFaceModes(unittest.TestCase):
+    """手机端人脸识别的模式判定与节流。
+
+    这块最容易出错的地方在于：逐帧请求是高频的，一旦节流写反，
+    要么变成「关了还在跑」（画面卡到没法用），要么变成「开了永远不跑」
+    （用户以为坏了）。所以每种模式都要钉死。
+    """
+
+    def setUp(self):
+        import phone_face
+
+        self.pf = phone_face
+        self.pf.reset()
+
+    def test_normalize_mode_known_values(self):
+        for m in ("off", "interval", "every"):
+            self.assertEqual(self.pf.normalize_mode(m), m)
+
+    def test_normalize_mode_case_and_space(self):
+        self.assertEqual(self.pf.normalize_mode("  EVERY "), "every")
+        self.assertEqual(self.pf.normalize_mode("Interval"), "interval")
+
+    def test_normalize_mode_invalid_becomes_off(self):
+        """非法值一律降级为 off，而不是抛错。
+
+        手机端是逐帧高频调用，为一个小参数传错就返回 400，
+        会让整个画面链路断掉 —— 用户看到的是「检测坏了」。
+        """
+        for bad in ("", "none", "abc", None, 123, [], {}):
+            self.assertEqual(self.pf.normalize_mode(bad), "off")
+
+    def test_normalize_mode_accepts_legacy_bool(self):
+        """兼容旧写法：True 当作 interval，而不是 every（避免误开每帧）。"""
+        self.assertEqual(self.pf.normalize_mode(True), "interval")
+        self.assertEqual(self.pf.normalize_mode("1"), "interval")
+        self.assertEqual(self.pf.normalize_mode("true"), "interval")
+
+    def test_off_never_runs(self):
+        for i in range(5):
+            self.assertFalse(self.pf.should_run("c1", "off", now=1000.0 + i))
+
+    def test_every_always_runs(self):
+        for i in range(5):
+            self.assertTrue(self.pf.should_run("c1", "every", now=1000.0 + i))
+
+    def test_interval_first_call_runs_then_throttles(self):
+        """第一次立刻跑；紧接着的请求要拦住；过了间隔再放行。"""
+        import config
+
+        gap = float(config.FACE_INTERVAL)
+        self.assertTrue(self.pf.should_run("c1", "interval", now=1000.0))
+        self.pf.mark_ran("c1", now=1000.0)
+
+        self.assertFalse(self.pf.should_run("c1", "interval", now=1000.0 + gap / 2))
+        # 差一点点也不放行，避免"看起来隔了 2 秒其实只有 1.99 秒"
+        self.assertFalse(self.pf.should_run("c1", "interval", now=1000.0 + gap - 0.01))
+        self.assertTrue(self.pf.should_run("c1", "interval", now=1000.0 + gap))
+
+    def test_interval_is_per_client(self):
+        """节流必须按客户端分开，否则两台手机会互相顶掉对方的计时。"""
+        self.assertTrue(self.pf.should_run("A", "interval", now=1000.0))
+        self.pf.mark_ran("A", now=1000.0)
+        self.assertFalse(self.pf.should_run("A", "interval", now=1000.5))
+        # B 从没跑过，第一次就该放行
+        self.assertTrue(self.pf.should_run("B", "interval", now=1000.5))
+
+    def test_save_overrides_off_and_throttle(self):
+        """存档必须认人：即使模式是 off / 刚跑过，也要放行。"""
+        self.pf.mark_ran("c1", now=1000.0)
+        self.assertTrue(self.pf.should_run("c1", "off", save=True, now=1000.1))
+        self.assertTrue(self.pf.should_run("c1", "interval", save=True, now=1000.1))
+
+    def test_should_run_does_not_mutate_state(self):
+        """should_run 只判断不改状态。
+
+        分开的原因：识别可能失败（没脸 / 模型缺失），失败不该记时间，
+        否则接下来整个间隔都不会再试，体验上像卡住了。
+        """
+        self.assertTrue(self.pf.should_run("c1", "interval", now=1000.0))
+        # 没调 mark_ran，因此下一次仍然认为"从没跑过"
+        self.assertTrue(self.pf.should_run("c1", "interval", now=1000.0))
+
+    def test_next_interval(self):
+        self.assertEqual(self.pf.next_interval("c1", "off"), 0.0)
+        self.assertEqual(self.pf.next_interval("c1", "every"), 0.0)
+        self.assertEqual(self.pf.next_interval("c1", "interval"), 0.0)
+        self.pf.mark_ran("c1", now=1000.0)
+        v = self.pf.next_interval("c1", "interval", now=1000.5)
+        self.assertGreater(v, 0)
+        self.assertLessEqual(v, float(self.pf.config.FACE_INTERVAL))
+
+    def test_reset_single_and_all(self):
+        self.pf.mark_ran("A", now=1000.0)
+        self.pf.mark_ran("B", now=1000.0)
+        self.pf.reset("A")
+        self.assertEqual(self.pf.next_interval("A", "interval", now=1000.1), 0.0)
+        self.assertGreater(self.pf.next_interval("B", "interval", now=1000.1), 0.0)
+        self.pf.reset()
+        self.assertEqual(self.pf.next_interval("B", "interval", now=1000.1), 0.0)
+
+    def test_mark_ran_prunes_stale_entries(self):
+        """键数量超上限时要清理陈旧条目，避免字典无限增长。"""
+        for i in range(300):
+            self.pf.mark_ran(f"c{i}", now=1000.0)
+        # 再插一个新客户端，触发清理（旧的 1000.0 相对 1000.0+3600 已过期）
+        self.pf.mark_ran("fresh", now=1000.0 + 4000.0)
+        with self.pf._lock:
+            self.assertLessEqual(len(self.pf._last_face_at), 300)
+        self.assertIn("fresh", self.pf._last_face_at)
+
+    def test_recognize_never_raises(self):
+        """人脸识别是附加能力，任何异常都要静默降级，不能连累安全帽检测。"""
+        try:
+            out = self.pf.recognize(_img(64, 48, (0, 0, 0)))
+        except Exception as e:  # noqa: BLE001
+            self.fail(f"recognize 不应抛异常: {e}")
+        self.assertIsInstance(out, list)
+
+    def test_scale_boxes_noop_when_same_size(self):
+        faces = [{"name": "甲", "box": [10.0, 20.0, 30.0, 40.0]}]
+        out = self.pf.scale_boxes(faces, (100, 100), (100, 100))
+        self.assertEqual(out[0]["box"], [10.0, 20.0, 30.0, 40.0])
+
+    def test_scale_boxes_scales_proportionally(self):
+        faces = [{"name": "甲", "box": [10.0, 20.0, 30.0, 40.0]}]
+        out = self.pf.scale_boxes(faces, (100, 50), (200, 100))
+        self.assertEqual(out[0]["box"], [20.0, 40.0, 60.0, 80.0])
+
+    def test_scale_boxes_survives_bad_input(self):
+        # 空列表、尺寸为 0、缺 box —— 都不能抛异常
+        self.assertEqual(self.pf.scale_boxes([], (10, 10), (20, 20)), [])
+        try:
+            self.pf.scale_boxes([{"name": "x"}], (0, 0), (20, 20))
+            self.pf.scale_boxes([{"name": "x", "box": None}], (10, 10), (20, 20))
+        except Exception as e:  # noqa: BLE001
+            self.fail(f"异常入参导致崩溃: {e}")
+
+
+class TestEquipAttach(unittest.TestCase):
+    """装备归属：把安全帽/口罩框配对到具体的人。
+
+    这是「谁没戴安全帽」这个功能的地基。配错了不会报错，
+    只会安静地把违规记到别人头上 —— 因此必须逐条钉死。
+    """
+
+    def _faces(self):
+        # 甲在左（戴帽+口罩），乙在右（只有口罩，帽子那组无信息）
+        return [
+            {"name": "甲", "is_temp": False, "box": [100, 100, 200, 220]},
+            {"name": "乙", "is_temp": True, "box": [400, 100, 500, 220]},
+        ]
+
+    def _dets(self):
+        return [
+            {"class": "helmet", "conf": 0.9, "box": [95, 60, 210, 140]},    # 甲的帽子（骑头顶）
+            {"class": "mask", "conf": 0.8, "box": [120, 160, 190, 215]},    # 甲的口罩
+            {"class": "face", "conf": 0.7, "box": [420, 160, 490, 215]},    # 乙没戴口罩
+        ]
+
+    def test_iou_basic(self):
+        import equip
+
+        self.assertAlmostEqual(equip.iou([0, 0, 10, 10], [0, 0, 10, 10]), 1.0, places=6)
+        self.assertEqual(equip.iou([0, 0, 10, 10], [20, 20, 30, 30]), 0.0)
+        # 一半重叠：交 50，并 150
+        self.assertAlmostEqual(equip.iou([0, 0, 10, 10], [5, 0, 15, 10]), 50 / 150, places=6)
+
+    def test_iou_survives_bad_input(self):
+        import equip
+
+        for bad in ([], [1], None, ["a", "b", "c", "d"]):
+            self.assertEqual(equip.iou(bad, [0, 0, 1, 1]), 0.0)
+            self.assertEqual(equip.iou([0, 0, 1, 1], bad), 0.0)
+
+    def test_hat_on_top_of_head_matches(self):
+        """安全帽骑在头顶、与人脸框几乎不重叠时也要能配对。
+
+        这是最典型的真实场景：帽子比脸大一圈且偏上，IoU 远低于阈值
+        （实测约 0.05），若只认 IoU 就会「明明戴了却判没戴」。
+        这里刻意让 IoU 低于阈值，验证「骑在头顶」这条宽松规则确实生效。
+        """
+        import equip
+
+        face = [{"name": "甲", "is_temp": False, "box": [100, 100, 200, 220]}]
+        dets = [{"class": "helmet", "conf": 0.9, "box": [95, 40, 210, 110]}]
+        # 前提：单靠 IoU 是配不上的，必须依靠宽松规则
+        self.assertLess(equip.iou(face[0]["box"], dets[0]["box"]),
+                        equip.IOU_THRESHOLD,
+                        "该用例的前提是 IoU 低于阈值")
+        out = equip.attach(dets, face)
+        self.assertIsNotNone(out[0]["equip"]["hat"], "骑在头顶的帽子应被配对")
+        self.assertTrue(out[0]["equip"]["hat"]["compliant"])
+
+    def test_hat_way_above_head_not_matched(self):
+        """帽子飘得太高（离人脸很远）不算戴在这人头上。"""
+        import equip
+
+        face = [{"name": "甲", "is_temp": False, "box": [100, 400, 200, 520]}]
+        dets = [{"class": "helmet", "conf": 0.9, "box": [95, 40, 210, 110]}]
+        out = equip.attach(dets, face)
+        self.assertIsNone(out[0]["equip"]["hat"], "过远的帽子不该被配对")
+
+    def test_assigns_equipment_to_correct_person(self):
+        """装备必须落到正确的人头上 —— 配错比漏配严重得多。"""
+        import equip
+
+        out = equip.attach(self._dets(), self._faces())
+        by_name = {f["name"]: f for f in out}
+
+        self.assertIsNotNone(by_name["甲"]["equip"]["hat"], "帽子应归甲")
+        self.assertIsNotNone(by_name["甲"]["equip"]["mask"], "甲的口罩应归甲")
+        self.assertTrue(by_name["甲"]["equip"]["mask"]["compliant"])
+
+        # 乙只有「未戴口罩」这一个框；帽子那组没有框 → 必须是未知而不是未戴
+        self.assertIsNone(by_name["乙"]["equip"]["hat"], "乙的帽子无信息，不该凭空配对")
+        self.assertIsNotNone(by_name["乙"]["equip"]["mask"])
+        self.assertFalse(by_name["乙"]["equip"]["mask"]["compliant"])
+
+    def test_missing_only_when_explicitly_detected(self):
+        """只有「明确检测到未佩戴」才进 missing。
+
+        该组完全没有检测框时属「无信息」，不能当作未佩戴上报 ——
+        否则摄像头没对准、模型漏检都会被误判成违规。
+        """
+        import equip
+
+        out = equip.attach(self._dets(), self._faces())
+        by_name = {f["name"]: f for f in out}
+        self.assertEqual(by_name["甲"]["missing"], [])
+        self.assertEqual(by_name["乙"]["missing"], ["mask"], "乙应只缺口罩")
+
+    def test_compliant_is_none_when_no_info(self):
+        import equip
+
+        out = equip.attach([], [{"name": "丙", "is_temp": False, "box": [0, 0, 50, 50]}])
+        self.assertIsNone(out[0]["compliant"], "完全没有装备信息时应是'未知'而非合规")
+
+    def test_no_faces_returns_empty(self):
+        """没有人脸时不该编造归属结果。"""
+        import equip
+
+        self.assertEqual(equip.attach(self._dets(), []), [])
+
+    def test_one_equipment_used_once(self):
+        """一顶帽子不能同时算给两个人。"""
+        import equip
+
+        faces = [
+            {"name": "甲", "is_temp": False, "box": [100, 100, 200, 220]},
+            {"name": "乙", "is_temp": False, "box": [105, 100, 205, 220]},
+        ]
+        dets = [{"class": "helmet", "conf": 0.9, "box": [100, 70, 205, 150]}]
+        out = equip.attach(dets, faces)
+        got = [f for f in out if f["equip"]["hat"] is not None]
+        self.assertEqual(len(got), 1, "同一顶帽子只应归给一个人")
+
+    def test_far_equipment_not_assigned(self):
+        """画面另一头的帽子不能算到这个人头上。"""
+        import equip
+
+        face = [{"name": "甲", "is_temp": False, "box": [0, 0, 100, 100]}]
+        dets = [{"class": "helmet", "conf": 0.9, "box": [500, 500, 600, 600]}]
+        out = equip.attach(dets, face)
+        self.assertIsNone(out[0]["equip"]["hat"])
+        self.assertEqual(out[0]["missing"], [])
+
+    def test_bad_box_does_not_crash(self):
+        import equip
+
+        try:
+            equip.attach([{"class": "helmet", "box": None}],
+                         [{"name": "甲", "box": [float("nan"), 0, 10, 10]}])
+            equip.attach([{"class": "helmet", "box": [0, 0, 10, 10]}],
+                         [{"name": "甲"}])
+        except Exception as e:  # noqa: BLE001
+            self.fail(f"异常入参导致崩溃: {e}")
+
+    def test_summarize_counts(self):
+        import equip
+
+        out = equip.attach(self._dets(), self._faces())
+        s = equip.summarize(out)
+        self.assertEqual(s["persons"], 2)
+        self.assertEqual(s["hat_ok"], 1)
+        self.assertEqual(s["hat_bad"], 0)
+        self.assertEqual(s["hat_unknown"], 1, "乙的帽子无信息应计入 unknown")
+        self.assertEqual(s["mask_ok"], 1)
+        self.assertEqual(s["mask_bad"], 1)
+        self.assertEqual(s["fully_compliant"], 1)
+        self.assertEqual(s["violators"], 1)
+        self.assertEqual(s["missing_list"][0]["name"], "乙")
+        self.assertEqual(s["missing_list"][0]["missing_cn"], ["口罩"])
+
+    def test_summarize_empty(self):
+        import equip
+
+        s = equip.summarize([])
+        self.assertEqual(s["persons"], 0)
+        self.assertEqual(s["violators"], 0)
+        self.assertEqual(s["missing_list"], [])
+
+
+class TestCameraDb(unittest.TestCase):
+    """监控摄像头配置：校验、脱敏与增删改查。
+
+    脱敏是本模块最不能出错的地方 —— RTSP 地址带明文密码，
+    一旦经列表接口下发到浏览器，截个图就泄漏了。
+    """
+
+    def setUp(self):
+        import camera_db
+
+        self.cdb = camera_db
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig = self.cdb.config.DB_PATH
+        self.cdb.config.DB_PATH = Path(self._tmp.name) / "cam_test.db"
+        self.cdb.close()
+        self.cdb.init_db()
+
+    def tearDown(self):
+        self.cdb.close()
+        self.cdb.config.DB_PATH = self._orig
+        self._tmp.cleanup()
+
+    # ---------- 脱敏 ----------
+    def test_mask_url_hides_password_and_user(self):
+        m = self.cdb.mask_url("rtsp://admin:Secret123@10.0.0.8:554/Streaming/Channels/102")
+        self.assertNotIn("Secret123", m)
+        self.assertNotIn("admin", m)
+        self.assertIn("10.0.0.8", m, "主机地址应保留，否则无法辨认是哪台设备")
+        self.assertIn("***:***@", m)
+
+    def test_mask_url_hides_user_even_without_password(self):
+        """只有用户名、没有密码时也要遮住 —— 用户名同样是敏感信息。"""
+        m = self.cdb.mask_url("rtsp://admin@10.0.0.8:554/s")
+        self.assertNotIn("admin", m)
+
+    def test_mask_url_keeps_url_without_credentials(self):
+        for u in ("http://10.0.0.8:8080/video", "rtsp://10.0.0.8:554/s"):
+            self.assertEqual(self.cdb.mask_url(u), u)
+        self.assertEqual(self.cdb.mask_url(""), "")
+        self.assertEqual(self.cdb.mask_url(None), "")
+
+    def test_mask_url_survives_weird_input(self):
+        for u in ("://x", "rtsp://", "rtsp://:pass@h/s", "不是地址"):
+            try:
+                self.cdb.mask_url(u)
+            except Exception as e:  # noqa: BLE001
+                self.fail(f"脱敏崩溃于 {u!r}: {e}")
+
+    # ---------- 校验 ----------
+    def test_validate_rejects_empty_name(self):
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.validate("   ", "rtsp", "rtsp://h/s")
+
+    def test_validate_rejects_bad_type(self):
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.validate("A", "ftp", "rtsp://h/s")
+
+    def test_validate_rejects_wrong_scheme(self):
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.validate("A", "rtsp", "http://h/s")
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.validate("A", "http", "rtsp://h/s")
+
+    def test_validate_rejects_non_numeric_device(self):
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.validate("A", "device", "abc")
+        # 负数也不是合法索引
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.validate("A", "device", "-1")
+
+    def test_validate_rejects_space_in_url(self):
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.validate("A", "rtsp", "rtsp://a b@h/s")
+
+    def test_validate_accepts_good_configs(self):
+        for t, u in (("rtsp", "rtsp://a:p@h:554/s"), ("http", "http://h:8080/video"),
+                     ("device", "0"), ("device", "1")):
+            n, tt, uu = self.cdb.validate(" 摄像头 ", t, " " + u + " ")
+            self.assertEqual(n, "摄像头", "名称应 strip")
+            self.assertEqual(uu, u, "地址应 strip")
+
+    def test_validate_normalizes_type_case(self):
+        n, t, u = self.cdb.validate("A", "RTSP", "rtsp://h/s")
+        self.assertEqual(t, "rtsp")
+
+    # ---------- CRUD ----------
+    def test_add_get_delete(self):
+        cid = self.cdb.add("东门", "rtsp", "rtsp://admin:p@10.0.0.8:554/s", location="1 号楼")
+        self.assertIsInstance(cid, int)
+        row = self.cdb.get(cid)
+        self.assertEqual(row["name"], "东门")
+        self.assertEqual(row["location"], "1 号楼")
+        self.assertEqual(row["enabled"], 1)
+        self.assertTrue(self.cdb.delete(cid))
+        self.assertIsNone(self.cdb.get(cid))
+        self.assertFalse(self.cdb.delete(cid), "重复删除应返回 False")
+
+    def test_list_masks_by_default(self):
+        self.cdb.add("东门", "rtsp", "rtsp://admin:Secret123@10.0.0.8:554/s")
+        items = self.cdb.list_cameras()          # 默认脱敏
+        self.assertNotIn("Secret123", str(items))
+        # 显式要求时才给原文（连流用）
+        raw = self.cdb.list_cameras(masked=False)
+        self.assertIn("Secret123", str(raw))
+
+    def test_list_includes_type_cn(self):
+        self.cdb.add("A", "device", "0")
+        self.assertEqual(self.cdb.list_cameras()[0]["type_cn"], self.cdb.TYPE_CN["device"])
+
+    def test_update_partial(self):
+        cid = self.cdb.add("旧名", "rtsp", "rtsp://h/s")
+        self.assertTrue(self.cdb.update(cid, name="新名"))
+        row = self.cdb.get(cid)
+        self.assertEqual(row["name"], "新名")
+        self.assertEqual(row["url"], "rtsp://h/s", "未传的字段不该被清掉")
+        self.assertIsNotNone(row["updated_at"])
+
+    def test_update_validates_new_values(self):
+        cid = self.cdb.add("A", "rtsp", "rtsp://h/s")
+        with self.assertRaises(self.cdb.CameraConfigError):
+            self.cdb.update(cid, url="http://wrong-scheme")
+        # 校验失败不应改坏原数据
+        self.assertEqual(self.cdb.get(cid)["url"], "rtsp://h/s")
+
+    def test_update_missing_id(self):
+        self.assertFalse(self.cdb.update(99999, name="x"))
+
+    def test_resolve_url_types(self):
+        r = self.cdb.add("Net", "rtsp", "rtsp://admin:p@h:554/s")
+        self.assertEqual(self.cdb.resolve_url(r), ("rtsp", "rtsp://admin:p@h:554/s"))
+        # device 类型要返回 int，OpenCV 不接受字符串索引
+        d = self.cdb.add("USB", "device", "2")
+        self.assertEqual(self.cdb.resolve_url(d), ("device", 2))
+        self.assertIsNone(self.cdb.resolve_url(99999))
+
+    def test_mark_result(self):
+        cid = self.cdb.add("A", "rtsp", "rtsp://h/s")
+        self.cdb.mark_result(cid, True)
+        self.assertTrue(self.cdb.get(cid)["last_ok_at"])
+        self.cdb.mark_result(cid, False, "连接超时")
+        self.assertEqual(self.cdb.get(cid)["last_error"], "连接超时")
+
+    def test_seed_from_env_only_when_empty(self):
+        """环境变量导入只在表为空时执行，避免每次启动塞重复记录。"""
+        self.assertEqual(self.cdb.count(), 0)
+        n = self.cdb.seed_from_env()
+        self.assertIn(n, (0, 1))
+        after = self.cdb.count()
+        self.cdb.seed_from_env()          # 再跑一次
+        self.assertEqual(self.cdb.count(), after, "不应重复导入")
+
+
 def main():
     argv = sys.argv[:]
     if "-v" in argv:
@@ -1016,6 +1470,9 @@ def main():
             TestFaceTempIds,
             TestFaceStore,
             TestFaceAnnotation,
+            TestPhoneFaceModes,
+            TestEquipAttach,
+            TestCameraDb,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)

@@ -67,6 +67,20 @@ CREATE INDEX IF NOT EXISTS idx_face_seen_created ON face_seen(created_at);
 CREATE INDEX IF NOT EXISTS idx_face_seen_person ON face_seen(person_id);
 """
 
+# face_seen 的装备归属字段。单独一条 ALTER，方便对老库做增量升级
+# （SQLite 的 ADD COLUMN 是幂等的非破坏操作，已有数据自动取默认值 NULL）。
+# 语义说明：
+#   hat_state  : 1=戴了安全帽  0=未戴  NULL=本帧没检测到任何头部装备（无信息）
+#   mask_state : 1=戴了口罩    0=未戴  NULL=本帧没检测到任何面部装备（无信息）
+#   用 NULL 而不是 0 表示「无信息」—— 这是本表最关键的一个设计：
+#   摄像头没对准、模型漏检都会导致没有装备框，若一律记 0（未戴），
+#   员工会被大面积误判成违规。宁可记「不知道」，也不能冤枉人。
+SEEN_UPGRADE = """
+ALTER TABLE face_seen ADD COLUMN hat_state  INTEGER;
+ALTER TABLE face_seen ADD COLUMN mask_state INTEGER;
+ALTER TABLE face_seen ADD COLUMN source     TEXT;
+"""
+
 
 class FaceModelMissingError(RuntimeError):
     """人脸模型未就绪"""
@@ -192,7 +206,30 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     conn = get_conn()
     conn.executescript(SCHEMA)
+    _upgrade_seen_columns(conn)
     conn.commit()
+
+
+def _upgrade_seen_columns(conn) -> None:
+    """给老的 face_seen 表补装备归属字段。
+
+    SQLite 没有 `ADD COLUMN IF NOT EXISTS`，重复添加会抛
+    `duplicate column name`。因此先查一遍现有列名再决定加不加 ——
+    直接 try/except 也行，但那样会把「真的加失败」也一起吞掉。
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(face_seen)")}
+    for stmt in SEEN_UPGRADE.strip().split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        # 从 "ALTER TABLE face_seen ADD COLUMN xxx INTEGER" 里取列名
+        parts = stmt.split()
+        if len(parts) >= 6 and parts[5] in cols:
+            continue
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass          # 并发初始化时可能已被别的连接加过
 
 
 def close() -> None:
@@ -362,12 +399,27 @@ def reset_temp_registry() -> None:
 
 # ---------------------------------------------------------------- 识别记录
 
-def add_seen(person_id, person_name, is_temp, score=0.0, image_path="") -> int:
-    """记录一次人脸识别结果。"""
+def add_seen(person_id, person_name, is_temp, score=0.0, image_path="",
+             hat_state=None, mask_state=None, source="") -> int:
+    """记录一次人脸识别结果（含当时的装备佩戴状态）。
+
+    hat_state / mask_state 语义见 SEEN_UPGRADE 的注释：
+        1 = 佩戴   0 = 未佩戴   None = 本帧无信息（没检测到该类装备框）
+
+    ``None`` 与 ``0`` 必须区分开：前者表示「不知道」，后者才是「确实没戴」。
+    统计「未佩戴率」时分母只算有信息的次数，否则漏检会被算成违规。
+    """
     conn = get_conn()
+
+    def _tri(v):
+        """三态归一化：None 保持 None，其余压成 1/0。"""
+        if v is None:
+            return None
+        return 1 if v else 0
+
     cur = conn.execute(
         "INSERT INTO face_seen (created_at, person_id, person_name, is_temp, "
-        "score, image_path) VALUES (?,?,?,?,?,?)",
+        "score, image_path, hat_state, mask_state, source) VALUES (?,?,?,?,?,?,?,?,?)",
         (
             _now(),
             person_id,
@@ -375,10 +427,94 @@ def add_seen(person_id, person_name, is_temp, score=0.0, image_path="") -> int:
             1 if is_temp else 0,
             round(float(score), 4),
             image_path or "",
+            _tri(hat_state),
+            _tri(mask_state),
+            source or "",
         ),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def stats_person_compliance(limit: int = 50, days: int = 30):
+    """按人统计装备佩戴合规情况 —— 这是合规统计页的核心数据。
+
+    与老口径的关键区别
+    ------------------
+    原来只能按「检测框」统计（本帧有几个安全帽），无法回答
+    「谁没戴」。现在装备已按空间重叠归属到人，因此可以按人聚合。
+
+    **分母只算「有信息」的次数**：``hat_state IS NOT NULL``。
+    漏检、摄像头没对准导致的无信息帧不进分母，
+    否则员工会因为「摄像头没拍到帽子」被算成违规。
+    """
+    conn = get_conn()
+    since = time.strftime(
+        "%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400)
+    )
+    rows = conn.execute(
+        """
+        SELECT person_name,
+               MAX(is_temp)                       AS is_temp,
+               COUNT(*)                           AS seen_n,
+               SUM(CASE WHEN hat_state  IS NOT NULL THEN 1 ELSE 0 END) AS hat_known,
+               SUM(CASE WHEN hat_state  = 1 THEN 1 ELSE 0 END)         AS hat_ok,
+               SUM(CASE WHEN hat_state  = 0 THEN 1 ELSE 0 END)         AS hat_bad,
+               SUM(CASE WHEN mask_state IS NOT NULL THEN 1 ELSE 0 END) AS mask_known,
+               SUM(CASE WHEN mask_state = 1 THEN 1 ELSE 0 END)         AS mask_ok,
+               SUM(CASE WHEN mask_state = 0 THEN 1 ELSE 0 END)         AS mask_bad,
+               MAX(created_at)                    AS last_at
+          FROM face_seen
+         WHERE created_at >= ?
+      GROUP BY person_name
+      ORDER BY hat_bad + mask_bad DESC, seen_n DESC
+         LIMIT ?
+        """,
+        (since, limit),
+    ).fetchall()
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        hk, mk = d["hat_known"] or 0, d["mask_known"] or 0
+        hb, mb = d["hat_bad"] or 0, d["mask_bad"] or 0
+        # 违规率：分母为 0 时记 None，前端显示「—」而不是 0%，
+        # 避免「从没拍到过帽子」被显示成「100% 合规」
+        d["hat_rate"] = round(hb / hk, 3) if hk else None
+        d["mask_rate"] = round(mb / mk, 3) if mk else None
+        # 综合合规次数：两类都有信息且都没违规才算一次
+        d["bad_total"] = hb + mb
+        out.append(d)
+    return out
+
+
+def stats_compliance_overview(days: int = 30) -> dict:
+    """整体合规概览：用于页面顶部的统计卡片。"""
+    conn = get_conn()
+    since = time.strftime(
+        "%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400)
+    )
+    row = conn.execute(
+        """
+        SELECT COUNT(*)                                                  AS seen_n,
+               SUM(CASE WHEN hat_state  IS NOT NULL THEN 1 ELSE 0 END)   AS hat_known,
+               SUM(CASE WHEN hat_state  = 0 THEN 1 ELSE 0 END)           AS hat_bad,
+               SUM(CASE WHEN mask_state IS NOT NULL THEN 1 ELSE 0 END)   AS mask_known,
+               SUM(CASE WHEN mask_state = 0 THEN 1 ELSE 0 END)           AS mask_bad,
+               SUM(CASE WHEN is_temp = 0 THEN 1 ELSE 0 END)              AS reg_n,
+               SUM(CASE WHEN is_temp = 1 THEN 1 ELSE 0 END)              AS temp_n
+          FROM face_seen
+         WHERE created_at >= ?
+        """,
+        (since,),
+    ).fetchone()
+    d = dict(row)
+    hk, mk = d["hat_known"] or 0, d["mask_known"] or 0
+    hb, mb = d["hat_bad"] or 0, d["mask_bad"] or 0
+    d["hat_rate"] = round(hb / hk, 3) if hk else None
+    d["mask_rate"] = round(mb / mk, 3) if mk else None
+    d["days"] = days
+    return d
 
 
 def query_seen(page=1, size=20, person=None, only_temp=None):

@@ -16,6 +16,7 @@
       </div>
       <button class="btn ghost" id="btnFace">开启人脸识别</button>
       <button class="btn ghost" id="btnSnap">抓拍存档</button>
+      <button class="btn" id="btnAddCam">＋ 添加监控摄像头</button>
     </div>
   </div>
 
@@ -28,6 +29,7 @@
       <div class="kv"><span>推理速度</span><b id="stFps">-</b></div>
       <div class="kv"><span>最近一帧目标</span><b id="stCounts">-</b></div>
       <div class="kv"><span>识别到的人</span><b id="stFaces">未开启</b></div>
+      <div class="kv"><span>本帧佩戴合规</span><b id="stComply">未开启</b></div>
     </div>
     <div class="note-box">
       <b>说明</b>
@@ -35,71 +37,76 @@
         <li>画面每帧经 YOLOv8 推理后以 MJPEG 流回传到浏览器；</li>
         <li>检测到目标时，每 5 秒自动保存一条检测记录（含标注截图），可在「检测记录」页查看；</li>
         <li><b>人脸识别</b>需先在「人脸底库」页录入人员；识别到已录入的人显示姓名，
-            未录入的显示临时访客编号，并按人汇总到「合规统计」页；</li>
+            未录入的显示临时访客编号；</li>
+        <li><b>佩戴合规按人判定</b>：安全帽/口罩的检测框会按空间重叠归属到具体的人
+            （谁戴了、谁没戴），而不只是统计「本帧有几个」；</li>
         <li>人脸识别按间隔执行（默认 2 秒一次），以避免拖慢画面流畅度。</li>
       </ul>
     </div>
   </div>
 </div>
 
-<!-- 未接入摄像头时的引导：不显示空白画面，直接告诉用户怎么接 -->
-<div class="card" id="setupCard" hidden>
-  <h3 class="card-title">接入监控摄像头</h3>
-  <div class="note-box">
-    <b>当前未检测到可用的视频源。</b>
-    本页支持两种接入方式 —— 推荐用 <b>RTSP 网络摄像头</b>（海康威视、大华等），
-    画面质量与工地场景更贴合；手边没有设备时，可先用<b>手机推流</b>快速验证。
+<!-- ============ 监控摄像头管理 ============ -->
+<div class="card" id="camListCard">
+  <div class="card-head-row">
+    <h3 class="card-title">已配置的监控摄像头</h3>
+    <span class="hint" id="camCount">—</span>
   </div>
-
-  <div class="setup-tabs">
-    <button class="seg-btn active" data-tab="rtsp">RTSP 网络摄像头</button>
-    <button class="seg-btn" data-tab="phone">手机推流（HTTP）</button>
+  <div id="camList" class="cam-list">
+    <div class="hint">正在加载…</div>
   </div>
-
-  <div class="setup-pane" id="pane-rtsp">
-    <p class="setup-lead">适用于海康威视 / 大华 / 宇视等支持 RTSP 的 IP 摄像头或 NVR。</p>
-    <ol class="setup-steps">
-      <li>确认摄像头与运行本系统的电脑在<b>同一局域网</b>（同网段，能互相 ping 通）。</li>
-      <li>在摄像头管理后台开启 <b>RTSP</b>（海康默认端口 <span class="mono">554</span>）。</li>
-      <li>拼出取流地址，常见格式：
-        <ul>
-          <li><b>海康威视</b>：<span class="mono">rtsp://admin:密码@摄像头IP:554/Streaming/Channels/101</span>
-              <br><span class="setup-tip">101 = 主码流（高清），102 = 子码流（流畅，检测够用）</span></li>
-          <li><b>大华</b>：<span class="mono">rtsp://admin:密码@摄像头IP:554/cam/realmonitor?channel=1&amp;subtype=0</span></li>
-        </ul>
-      </li>
-      <li>启动服务时指定地址（Windows 下用 <span class="mono">run_web.bat</span> 可直接改）：
-        <pre class="setup-code">set CAMERA_SOURCE=rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102
-scripts\run_web.bat</pre>
-      </li>
-    </ol>
-    <div class="field-hint">
-      不确定地址对不对？先用探测脚本验证，<b>能取到画面再启动服务</b>：
-      <pre class="setup-code">python scripts\list_cameras.py --url "rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102" --save</pre>
-    </div>
-  </div>
-
-  <div class="setup-pane" id="pane-phone" hidden>
-    <p class="setup-lead">适用于手边没有 IP 摄像头时，用手机 App 快速搭一个视频源。</p>
-    <ol class="setup-steps">
-      <li>手机装 <b>IP Webcam</b>（Android，免费）或同类 App。</li>
-      <li>打开 App 点「启动服务器」，记下显示的地址（形如
-        <span class="mono">http://手机IP:8080</span>）。</li>
-      <li>取流地址在其后加 <span class="mono">/video</span>：
-        <pre class="setup-code">set CAMERA_SOURCE=http://192.168.1.100:8080/video
-scripts\run_web.bat</pre>
-      </li>
-      <li>先用浏览器直接打开该地址，<b>能看到画面</b>说明地址正确。</li>
-    </ol>
-    <div class="field-hint">
-      💡 也可以用本系统的「<b>手机检测</b>」页 —— 手机浏览器直接开摄像头，
-      逐帧发给电脑推理，<b>不用装任何 App</b>，更适合现场随手测。
-    </div>
-  </div>
-
   <div class="field-hint">
-    <b>排查提示</b>：改了地址后<b>必须重启服务</b>才生效；若地址不可达，
-    抓帧线程会每 5 秒自动重试并在画面上显示原因。
+    <b>地址中的账号密码会自动打码显示</b>，不会随接口下发到浏览器 ——
+    截图或查看网络请求都拿不到明文凭据。
+  </div>
+</div>
+
+<div class="card" id="camFormCard" hidden>
+  <h3 class="card-title" id="camFormTitle">添加监控摄像头</h3>
+  <div class="cam-form">
+    <label class="field">
+      <span class="field-label">名称 <i class="req">*</i></span>
+      <input type="text" id="fcName" maxlength="40" placeholder="例如：东门岗亭">
+    </label>
+    <label class="field">
+      <span class="field-label">类型 <i class="req">*</i></span>
+      <select id="fcType">
+        <option value="rtsp">RTSP 网络摄像头（海康 / 大华等）</option>
+        <option value="http">HTTP / MJPEG 流（手机推流 App）</option>
+        <option value="device">本机设备索引（USB 摄像头）</option>
+      </select>
+    </label>
+    <label class="field field-wide">
+      <span class="field-label">地址 <i class="req">*</i></span>
+      <input type="text" id="fcUrl" maxlength="500"
+             placeholder="rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102">
+      <span class="field-tip" id="fcUrlTip"></span>
+    </label>
+    <label class="field">
+      <span class="field-label">安装位置</span>
+      <input type="text" id="fcLocation" maxlength="80" placeholder="例如：1 号楼东侧">
+    </label>
+    <label class="field">
+      <span class="field-label">备注</span>
+      <input type="text" id="fcNote" maxlength="200" placeholder="选填">
+    </label>
+  </div>
+
+  <div class="note-box" id="fcHelp">
+    <b>地址怎么填</b>
+    <ul>
+      <li><b>海康威视</b>：<span class="mono">rtsp://admin:密码@IP:554/Streaming/Channels/101</span>
+          <br><span class="hint">101 = 主码流（高清），102 = 子码流（流畅，检测够用，推荐）</span></li>
+      <li><b>大华</b>：<span class="mono">rtsp://admin:密码@IP:554/cam/realmonitor?channel=1&amp;subtype=0</span></li>
+      <li><b>手机推流</b>：装 IP Webcam 后填 <span class="mono">http://手机IP:8080/video</span></li>
+      <li><b>本机 USB 摄像头</b>：类型选「本机设备索引」，地址填 <span class="mono">0</span></li>
+    </ul>
+  </div>
+
+  <div class="cam-form-actions">
+    <button class="btn" id="fcSave">保存</button>
+    <button class="btn ghost" id="fcTest">保存前测试连通</button>
+    <button class="btn ghost" id="fcCancel">取消</button>
   </div>
 </div>
 {% endblock %}
@@ -109,7 +116,6 @@ scripts\run_web.bat</pre>
 const CN = {helmet:'安全帽', head:'未戴安全帽', mask:'口罩', face:'未戴口罩'};
 const feed = document.getElementById('feed');
 const camOff = document.getElementById('camOff');
-const setupCard = document.getElementById('setupCard');
 let feedStarted = false;
 
 feed.addEventListener('load', () => { feed.hidden = false; camOff.style.display = 'none'; });
@@ -150,13 +156,188 @@ btnFace.addEventListener('click', async () => {
   toast(faceOn ? '已开启人脸识别' : '已关闭人脸识别');
 });
 
-/* 接入引导的标签切换 */
-document.querySelectorAll('.setup-tabs .seg-btn').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('.setup-tabs .seg-btn').forEach(x => x.classList.remove('active'));
-  b.classList.add('active');
-  document.getElementById('pane-rtsp').hidden = b.dataset.tab !== 'rtsp';
-  document.getElementById('pane-phone').hidden = b.dataset.tab !== 'phone';
-}));
+/* ================= 监控摄像头管理 ================= */
+const camListEl = document.getElementById('camList');
+const camFormCard = document.getElementById('camFormCard');
+let camItems = [];
+let editingId = null;      // null=新增，否则为正在编辑的 id
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+async function loadCameras() {
+  try {
+    const d = await (await fetch('/api/cameras')).json();
+    camItems = d.items || [];
+    document.getElementById('camCount').textContent =
+      camItems.length ? `共 ${camItems.length} 路` : '尚未配置';
+    if (!camItems.length) {
+      camListEl.innerHTML = '<div class="hint">还没有配置摄像头。点上方「＋ 添加监控摄像头」开始。</div>';
+      return;
+    }
+    camListEl.innerHTML = camItems.map(c => {
+      const active = c.id === d.active;
+      const state = c.last_error
+        ? `<span class="txt-red" title="${esc(c.last_error)}">连接异常</span>`
+        : (c.last_ok_at ? `<span class="txt-green">连通正常</span>` : '未测试');
+      return `<div class="cam-item${active ? ' cam-item-active' : ''}">
+        <div class="cam-item-main">
+          <b>${esc(c.name)}</b>
+          ${active ? '<span class="badge ok">当前使用</span>' : ''}
+          <span class="badge">${esc(c.type_cn)}</span>
+          <div class="cam-item-url mono">${esc(c.url)}</div>
+          <div class="cam-item-meta">
+            位置：${esc(c.location || '—')}　状态：${state}
+            ${c.last_ok_at ? '　最近连通：' + esc(c.last_ok_at) : ''}
+          </div>
+        </div>
+        <div class="cam-item-actions">
+          <button class="btn tiny ghost" data-act="test" data-id="${c.id}">测试</button>
+          <button class="btn tiny ghost" data-act="use" data-id="${c.id}"
+                  ${active ? 'disabled' : ''}>使用该路</button>
+          <button class="btn tiny ghost" data-act="edit" data-id="${c.id}">编辑</button>
+          <button class="btn tiny ghost danger" data-act="del" data-id="${c.id}">删除</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    camListEl.innerHTML = '<div class="hint">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+
+function openCamForm(item) {
+  editingId = item ? item.id : null;
+  document.getElementById('camFormTitle').textContent = item ? '编辑监控摄像头' : '添加监控摄像头';
+  document.getElementById('fcName').value = item ? item.name : '';
+  document.getElementById('fcType').value = item ? item.type : 'rtsp';
+  document.getElementById('fcUrl').value = item ? item.url : '';
+  document.getElementById('fcLocation').value = item ? (item.location || '') : '';
+  document.getElementById('fcNote').value = item ? (item.note || '') : '';
+  updateUrlTip();
+  camFormCard.hidden = false;
+  camFormCard.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  document.getElementById('fcName').focus();
+}
+
+function collectForm() {
+  return {
+    id: editingId,
+    name: document.getElementById('fcName').value,
+    type: document.getElementById('fcType').value,
+    url: document.getElementById('fcUrl').value,
+    location: document.getElementById('fcLocation').value,
+    note: document.getElementById('fcNote').value,
+  };
+}
+
+const URL_PLACEHOLDER = {
+  rtsp: 'rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102',
+  http: 'http://192.168.1.100:8080/video',
+  device: '0',
+};
+
+function updateUrlTip() {
+  const t = document.getElementById('fcType').value;
+  const urlEl = document.getElementById('fcUrl');
+  urlEl.placeholder = URL_PLACEHOLDER[t] || '';
+  document.getElementById('fcUrlTip').textContent =
+    t === 'device' ? '本机 USB 摄像头的设备索引，通常是 0；不确定可运行 scripts/list_cameras.py 查看'
+                   : '地址中的密码会以 *** 显示，不会下发到浏览器';
+}
+
+document.getElementById('btnAddCam').addEventListener('click', () => openCamForm(null));
+document.getElementById('fcType').addEventListener('change', updateUrlTip);
+document.getElementById('fcCancel').addEventListener('click', () => { camFormCard.hidden = true; });
+
+document.getElementById('fcSave').addEventListener('click', async () => {
+  const f = collectForm();
+  if (!f.name.trim()) return toast('请填写名称', 'error');
+  if (!f.url.trim()) return toast('请填写地址', 'error');
+  const url = editingId ? '/api/cameras/update' : '/api/cameras/add';
+  const r = await fetch(url, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(f),
+  });
+  const d = await r.json();
+  if (!d.ok) return toast(d.error || '保存失败', 'error');
+  toast(editingId ? '已更新' : '已添加');
+  camFormCard.hidden = true;
+  await loadCameras();
+});
+
+document.getElementById('fcTest').addEventListener('click', async () => {
+  const f = collectForm();
+  // 未保存的新配置：先存再测（否则没有 id 可测）
+  if (!editingId) {
+    if (!f.name.trim() || !f.url.trim()) return toast('请先填写名称和地址', 'error');
+    const r = await fetch('/api/cameras/add', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(f),
+    });
+    const d = await r.json();
+    if (!d.ok) return toast(d.error || '保存失败', 'error');
+    editingId = d.id;
+    await loadCameras();
+  }
+  toast('正在测试连通性，请稍候…');
+  const d = await (await fetch('/api/cameras/test', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: editingId}),
+  })).json();
+  if (d.ok) toast('连接成功，分辨率 ' + d.size.join('×'));
+  else toast(d.error || '连接失败', 'error');
+  await loadCameras();
+});
+
+camListEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = parseInt(btn.dataset.id, 10);
+  const act = btn.dataset.act;
+  const item = camItems.find(c => c.id === id);
+
+  if (act === 'edit') return openCamForm(item);
+
+  if (act === 'del') {
+    if (!confirm(`确认删除摄像头「${item ? item.name : id}」？此操作不可恢复。`)) return;
+    const d = await (await fetch('/api/cameras/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id}),
+    })).json();
+    toast(d.ok ? '已删除' : (d.error || '删除失败'), d.ok ? 'ok' : 'error');
+    return loadCameras();
+  }
+
+  if (act === 'use') {
+    const d = await (await fetch('/api/cameras/switch', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id}),
+    })).json();
+    if (!d.ok) return toast(d.error || '切换失败', 'error');
+    toast('已切换到「' + (item ? item.name : id) + '」，画面重连中…');
+    // 强制刷新 MJPEG 流：浏览器不会因为 src 没变就重连，
+    // 必须换一个带时间戳的 URL 才能让它丢掉旧连接、拉新流。
+    feed.src = '/camera/feed?kind=' + currentKind() + '&t=' + Date.now();
+    return loadCameras();
+  }
+
+  if (act === 'test') {
+    toast('正在测试…');
+    const d = await (await fetch('/api/cameras/test', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id}),
+    })).json();
+    toast(d.ok ? ('连接成功，分辨率 ' + d.size.join('×')) : (d.error || '连接失败'),
+          d.ok ? 'ok' : 'error');
+    return loadCameras();
+  }
+});
+
+function currentKind() {
+  const b = document.querySelector('#kindSeg .seg-btn.active');
+  return b ? b.dataset.kind : 'helmet';
+}
 
 /* 轮询状态。连续拿不到画面时，显示接入引导（而不是让用户对着黑屏猜）。 */
 let noSignal = 0;
@@ -191,22 +372,37 @@ setInterval(async () => {
       stFaces.className = 'txt-green';
     }
 
+    // 按人判定的佩戴合规：谁没戴比起「本帧几个未戴」有用得多
+    const pc = s.person_compliance || {};
+    const stComply = document.getElementById('stComply');
+    if (!s.face || !pc.persons) {
+      stComply.textContent = s.face ? '画面中暂无人脸' : '未开启';
+      stComply.className = '';
+    } else if (pc.violators > 0) {
+      const who = (pc.missing_list || []).map(v =>
+        v.name + '（缺' + v.missing_cn.join('、') + '）').join('，');
+      stComply.textContent = `${pc.persons} 人中 ${pc.violators} 人违规：${who}`;
+      stComply.className = 'txt-red';
+    } else {
+      stComply.textContent = `${pc.persons} 人全部合规`;
+      stComply.className = 'txt-green';
+    }
+
     // 连续 3 次（约 6 秒）取不到画面，且从未成功加载过流 → 认为需要接入引导
     if (!s.ok) {
       noSignal++;
-      if (noSignal >= 3 && !feedStarted) setupCard.hidden = false;
+      if (noSignal >= 3 && !feedStarted) camFormCard.hidden = camFormCard.hidden;
     } else {
       noSignal = 0;
-      setupCard.hidden = true;
     }
   } catch (e) {
     noSignal++;
-    if (noSignal >= 3 && !feedStarted) setupCard.hidden = false;
   }
 }, 2000);
 
-/* 记录画面是否曾经成功过：成功过说明配置没问题，只是临时抖动，
-   不需要再提示「去接摄像头」。 */
-feed.addEventListener('load', () => { feedStarted = true; setupCard.hidden = true; });
+/* 记录画面是否曾经成功过：成功过说明配置没问题，只是临时抖动。 */
+feed.addEventListener('load', () => { feedStarted = true; });
+
+loadCameras();
 </script>
 {% endblock %}

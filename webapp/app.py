@@ -25,11 +25,13 @@ from flask import (
 )
 
 import camera
+import camera_db
 import config
 import db
 import detector
 import face_db
 import imageio_cn
+import phone_face
 import train_manager
 import video_jobs
 from detector import ModelMissingError
@@ -41,6 +43,9 @@ app.config["MAX_CONTENT_LENGTH"] = config.MAX_CONTENT_LENGTH
 
 db.init_db()
 face_db.init_db()
+camera_db.init_db()
+# 首次启动把环境变量里那路摄像头导入配置表，页面上就能直接看到并管理
+camera_db.seed_from_env()
 
 PAGE_SIZE = 10
 
@@ -292,6 +297,142 @@ def api_camera_state():
     return jsonify(camera.get_state())
 
 
+# ------------------------------------------------- 监控摄像头配置管理
+@app.get("/api/cameras")
+def api_cameras_list():
+    """列出已配置的摄像头（地址已脱敏，绝不下发明文凭据）。"""
+    active = camera.get_state().get("active_camera")
+    return jsonify({
+        "ok": True,
+        "items": camera_db.list_cameras(masked=True),
+        "types": [{"value": t, "label": camera_db.TYPE_CN[t]}
+                  for t in camera_db.SOURCE_TYPES],
+        "active": active,
+        "count": camera_db.count(),
+    })
+
+
+@app.post("/api/cameras/add")
+def api_cameras_add():
+    """新增一路摄像头配置。
+
+    校验失败返回 400 并把原因原文带上 —— 这些都是用户填错字段造成的，
+    说清楚哪错了比一句「参数错误」有用得多。
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        cid = camera_db.add(
+            body.get("name"), body.get("type"), body.get("url"),
+            location=body.get("location"), note=body.get("note"),
+        )
+    except camera_db.CameraConfigError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "id": cid, "item": camera_db.get(cid) and
+                    {**camera_db.get(cid), "url": camera_db.mask_url(camera_db.get(cid)["url"])}})
+
+
+@app.post("/api/cameras/update")
+def api_cameras_update():
+    body = request.get_json(force=True, silent=True) or {}
+    cid = body.get("id")
+    if cid is None:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+    try:
+        ok = camera_db.update(
+            cid,
+            name=body.get("name"), ctype=body.get("type"), url=body.get("url"),
+            location=body.get("location"), note=body.get("note"),
+            enabled=body.get("enabled"),
+        )
+    except camera_db.CameraConfigError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    if not ok:
+        return jsonify({"ok": False, "error": "摄像头不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@app.post("/api/cameras/delete")
+def api_cameras_delete():
+    body = request.get_json(force=True, silent=True) or {}
+    cid = body.get("id")
+    if cid is None:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+    # 删掉的正是当前在用的那路 → 同时退回环境变量来源，避免画面卡在已删配置上
+    if camera.get_state().get("active_camera") == int(cid):
+        camera.set_active_camera(None)
+    ok = camera_db.delete(cid)
+    return jsonify({"ok": bool(ok), "error": "" if ok else "摄像头不存在"})
+
+
+@app.post("/api/cameras/switch")
+def api_cameras_switch():
+    """切换当前使用的摄像头。传 id=null 表示回到环境变量配置的那一路。"""
+    body = request.get_json(force=True, silent=True) or {}
+    cid = body.get("id")
+    if cid in ("", "null", 0, "0"):
+        cid = None
+    if cid is not None:
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "id 必须是整数或 null"}), 400
+    if not camera.set_active_camera(cid):
+        return jsonify({"ok": False, "error": "摄像头不存在"}), 404
+    camera.start()          # 确保线程在跑；reload 会让它重连新来源
+    return jsonify({"ok": True, "active": cid})
+
+
+@app.post("/api/cameras/test")
+def api_cameras_test():
+    """测试某路摄像头是否连得通（不切换当前画面）。
+
+    现场配置 RTSP 最常踩的坑是地址写错、端口不对、密码过期，
+    等页面黑屏再排查很费劲。这里单独给一个「先测再切」的入口。
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    cid = body.get("id")
+    if cid is None:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+
+    res = camera_db.resolve_url(int(cid))
+    if not res:
+        return jsonify({"ok": False, "error": "摄像头不存在或地址非法"}), 404
+    ctype, target = res
+
+    cap = None
+    try:
+        if ctype == "device":
+            cap = cv2.VideoCapture(int(target))
+        else:
+            params = [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, config.CAMERA_STREAM_TIMEOUT * 1000,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC, config.CAMERA_STREAM_TIMEOUT * 1000,
+            ]
+            try:
+                cap = cv2.VideoCapture(target, cv2.CAP_FFMPEG, params)
+            except (cv2.error, TypeError):
+                cap = cv2.VideoCapture(target)
+        if not cap or not cap.isOpened():
+            camera_db.mark_result(int(cid), False, "无法打开视频源")
+            return jsonify({"ok": False, "error": "无法打开该视频源，请检查地址 / 端口 / 账号"}), 200
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            camera_db.mark_result(int(cid), False, "连上了但读不到画面")
+            return jsonify({"ok": False, "error": "已连接但读不到画面，可能是编码不受支持"}), 200
+        h, w = frame.shape[:2]
+        camera_db.mark_result(int(cid), True)
+        return jsonify({"ok": True, "size": [w, h]})
+    except Exception as e:  # noqa: BLE001
+        camera_db.mark_result(int(cid), False, str(e))
+        return jsonify({"ok": False, "error": f"连接失败：{e}"}), 200
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 @app.post("/api/camera/snapshot")
 def api_camera_snapshot():
     res = camera.snapshot()
@@ -310,10 +451,15 @@ _PHONE_MAX_FRAME_BYTES = 6 * 1024 * 1024   # 单帧上限 6MB，防止异常大�
 
 @app.post("/api/phone/detect")
 def api_phone_detect():
-    """接收手机浏览器传来的一帧图像，返回标注图与计数。
+    """接收手机浏览器传来的一帧图像，返回检测结果与计数。
 
     默认**不落库** —— 逐帧落库会在几秒内产生上千条记录。
     只有显式传 save=1（用户点「抓拍存档」）时才写入。
+
+    人脸识别由 body.face_mode 控制：off / interval / every。
+    识别结果里的框与安全帽框共用同一套坐标系（都是「上传帧」像素），
+    因此前端可以用同一套换算逻辑画两种框。人脸结果同样只在 save=1
+    时落库，理由与上面一致。
     """
     import base64
 
@@ -345,6 +491,8 @@ def api_phone_detect():
     except (TypeError, ValueError):
         conf = 0.25
 
+    want_save = str(body.get("save", "")).lower() in ("1", "true", "yes")
+
     # 逐帧请求必须「宁可丢帧，不可排队」：等锁超时说明推理通道被占满
     # （比如摄像头线程正在跑），直接告诉前端跳过这一帧。
     # 注意服务端为单线程串行，客户端帧间隔 250ms > 单帧推理 60~80ms，
@@ -359,6 +507,28 @@ def api_phone_detect():
     except ModelMissingError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
+    # ---- 人脸识别（附加能力，失败不影响上面这条主线） ----
+    face_mode = phone_face.normalize_mode(body.get("face_mode"))
+    client_key = str(body.get("client") or request.remote_addr or "-")[:64]
+    faces = []
+    if face_mode != "off" or want_save:
+        if phone_face.should_run(client_key, face_mode, save=want_save):
+            # 只有真的跑了才记时间：识别失败（无脸/模型缺失）不记，
+            # 否则接下来两秒都不会再试，看起来像卡住了。
+            phone_face.mark_ran(client_key)
+            # 把装备检测框一起传进去 → 人脸与装备按空间重叠配对，
+            # 于是「谁没戴安全帽」可以落到具体的人头上
+            faces = phone_face.recognize(img, save=want_save, detections=dets,
+                                         source="phone")
+
+    person_sum = {}
+    if faces:
+        try:
+            import equip
+            person_sum = equip.summarize(faces)
+        except Exception:  # noqa: BLE001
+            person_sum = {}
+
     resp = {
         "ok": True,
         "counts": counts,
@@ -369,10 +539,16 @@ def api_phone_detect():
         # 检测框坐标（原图像素）。前端据 size 换算成显示比例后叠加绘制，
         # 这样画框与画面严格同步 —— 服务端不需要回传标注图（省带宽、免二次编码）。
         "detections": dets,
+        "face_mode": face_mode,
+        "faces": faces,
+        "person_compliance": person_sum,
+        "face_ready": face_db.face_model_ready(),
+        # 提示前端最快多久后再来人脸请求（interval 模式下可用于主动降频）
+        "next_face_sec": phone_face.next_interval(client_key, face_mode),
     }
 
     # 只在用户点「抓拍存档」时落盘 + 落库
-    if str(body.get("save", "")).lower() in ("1", "true", "yes"):
+    if want_save:
         out_name = f"phone_{_rand_name('.jpg')}"
         if not imageio_cn.imwrite(config.RESULT_DIR / out_name, annotated):
             return jsonify({"ok": False, "error": "结果图保存失败"}), 500
@@ -597,11 +773,19 @@ def api_faces_identify():
 # ---------------------------------------------------------------- 合规统计 API
 @app.get("/api/compliance")
 def api_compliance():
-    """合规统计：按人聚合的识别情况。
+    """合规统计：按人聚合的识别情况 + 按人聚合的装备佩戴情况。
 
     注意：安全帽与口罩是两套独立模型，这里严格分开统计、互不交叉，
     与「两项分别统计、不算总分」的需求一致。
+
+    `person_compliance` 是本轮新增的核心数据 —— 装备已按空间重叠
+    归属到人，因此可以答出「张三 3 次未戴安全帽」这种落到人头上的结论，
+    而不是只有「本帧 2 个未戴安全帽」。
     """
+    try:
+        days = max(1, min(365, int(request.args.get("days", 30))))
+    except (TypeError, ValueError):
+        days = 30
     return jsonify(
         {
             "ok": True,
@@ -611,6 +795,8 @@ def api_compliance():
             "persons": face_db.stats_persons(50),
             "detect_summary": db.stats_summary(),
             "detect_classes": db.stats_classes(),
+            "compliance_overview": face_db.stats_compliance_overview(days),
+            "person_compliance": face_db.stats_person_compliance(limit=50, days=days),
         }
     )
 

@@ -37,6 +37,16 @@
       <button class="seg-btn" data-kind="mask">口罩</button>
     </div>
 
+    <div class="phone-face-row">
+      <span class="phone-face-label">人脸识别</span>
+      <div class="seg phone-seg phone-face-seg" id="faceSeg">
+        <button class="seg-btn active" data-fmode="off">关闭</button>
+        <button class="seg-btn" data-fmode="interval">每 2 秒</button>
+        <button class="seg-btn" data-fmode="every">每帧</button>
+      </div>
+    </div>
+    <div class="field-hint" id="faceHint" hidden></div>
+
     <div class="phone-counters" id="counters">
       <span class="chip chip-total">等待检测…</span>
     </div>
@@ -48,8 +58,11 @@
       <ul>
         <li><b>画面完全在本机处理</b>：手机摄像头画面逐帧发送到运行本系统的电脑/服务器推理，不经过第三方；</li>
         <li>检测到目标时会在画面上<b>直接叠加检测框</b>（绿框=合规，红框=违规）；</li>
+        <li><b>人脸识别</b>可选三档节奏：<b>关闭</b> / <b>每 2 秒</b>（推荐，画面流畅）/ <b>每帧</b>（最实时但会卡）。
+            识别到的人会用<b>青框标姓名</b>，底库里没有的显示<b>橙框 + 访客编号</b>；</li>
         <li>为保持画面流畅与稳定，检测帧率约为 <b>4 帧/秒</b>，不影响识别效果；</li>
-        <li>点「抓拍存档」才会把当前画面写入检测记录，日常预览不留痕；</li>
+        <li>点「抓拍存档」才会把当前画面写入检测记录，日常预览不留痕。
+            <b>存档时会强制认一次人</b>，结果记入「合规统计」；</li>
         <li>若提示无法启动摄像头，通常是浏览器要求 <b>HTTPS 或 localhost</b> 才允许访问摄像头，详见下方提示。</li>
       </ul>
     </div>
@@ -94,9 +107,12 @@ let stream = null;
 let running = false;
 let facing = 'environment';   // 默认后置，拍工地方便
 let kind = 'helmet';
+let faceMode = 'off';         // off | interval | every
+let faceReady = true;
 let timer = null;
 let busy = false;             // 防止请求堆积
 let frames = 0, fpsT0 = 0;
+let lastFaces = [];           // 上一帧识别到的人：只在跑人脸识别的帧更新，跨帧保持显示
 
 /* ---------- 摄像头开关 ---------- */
 async function start() {
@@ -166,6 +182,7 @@ function stop() {
   btnStop.disabled = true;
   btnStart.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>启动摄像头';
   document.getElementById('counters').innerHTML = '<span class="chip chip-total">等待检测…</span>';
+  lastFaces = [];
 }
 
 function showHint(text) {
@@ -240,7 +257,7 @@ async function detectOnce() {
     const r = await fetch('/api/phone/detect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, kinds: [kind] }),
+      body: JSON.stringify({ image, kinds: [kind], face_mode: faceMode, client: CLIENT_ID }),
       signal: inflight.signal,
     });
     // 503 = 服务端推理通道忙，静默跳过本帧（丢帧比拖垮服务端好）
@@ -259,6 +276,18 @@ async function detectOnce() {
     inflight = null;
   }
 }
+
+/* 客户端标识：服务端的「每 2 秒」节流是按客户端记时间的，
+   没有它就无法区分不同手机，相互之间会顶掉对方的计时。 */
+const CLIENT_ID = (() => {
+  try {
+    let v = localStorage.getItem('phone_cid');
+    if (!v) { v = 'p' + Math.random().toString(36).slice(2, 10); localStorage.setItem('phone_cid', v); }
+    return v;
+  } catch (e) {
+    return 'p' + Math.random().toString(36).slice(2, 10);
+  }
+})();
 
 /* 服务端出错时逐步放慢节奏：连续失败会让间隔从 120ms 退到最多 2s，
    避免在服务端卡顿时雪崩式重试。任一次成功立即恢复常速。 */
@@ -289,7 +318,31 @@ function renderCounts(d) {
   } else if (total > 0) {
     html += `<span class="chip chip-ok">✓ 全部合规</span>`;
   }
+
+  // 人脸结果只在真正跑识别的那一帧才更新，其余帧沿用上一帧的显示：
+  // 「每 2 秒」模式下如果每帧都按空数组清掉，姓名会以 4Hz 频率闪烁。
+  if (d.face_mode && d.face_mode !== 'off') {
+    if (d.face_ready === false) {
+      html += `<span class="chip chip-bad">人脸模型未就绪</span>`;
+    } else if (Array.isArray(d.faces) && d.faces.length) {
+      lastFaces = d.faces;
+    }
+    if (lastFaces.length) {
+      const names = lastFaces.map(f =>
+        `<b class="fn ${f.is_temp ? 'fn-temp' : 'fn-known'}">${esc(f.name)}</b>`).join(' ');
+      html += `<span class="chip chip-face">识别到 ${lastFaces.length} 人：${names}</span>`;
+    } else if (d.face_mode === 'interval' || d.face_mode === 'every') {
+      html += `<span class="chip chip-face">未识别到人脸</span>`;
+    }
+  } else {
+    lastFaces = [];
+  }
   document.getElementById('counters').innerHTML = html;
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 }
 
 /* ---------- 检测框叠加绘制 ----------
@@ -303,6 +356,10 @@ function renderCounts(d) {
 const CN_COLOR = {
   helmet: '#4ade80', head: '#f87171', mask: '#4ade80', face: '#f87171',
 };
+/* 人脸框配色与摄像头端保持一致：已注册=青色、未注册访问=橙色。
+   这里用同色系的浅色值，深色画面上更清楚。 */
+const FACE_COLOR_KNOWN = '#3cd6d6';
+const FACE_COLOR_TEMP  = '#ffbe28';
 let _oc = null;
 
 function fitRect(vw, vh, cw, ch) {
@@ -334,7 +391,10 @@ function drawOverlay(d) {
   _oc.clearRect(0, 0, cw, ch);
 
   const dets = d.detections || [];
-  if (!dets.length) return;
+  // 人脸框沿用上一帧的结果，避免「每 2 秒」模式下人脸框一闪一闪
+  const faces = (Array.isArray(d.faces) && d.faces.length) ? d.faces
+              : (d.face_mode && d.face_mode !== 'off' ? lastFaces : []);
+  if (!dets.length && !faces.length) return;
 
   const r = fitRect(fw, fh, cw, ch);
   const kx = r.w / fw, ky = r.h / fh;      // 帧像素 -> 容器 CSS 像素
@@ -363,6 +423,32 @@ function drawOverlay(d) {
     _oc.fillStyle = '#0b1220';
     _oc.fillText(label, bx + 5, ly - 2);
   }
+
+  // 人脸框画在检测框之后（叠在上面）：姓名比「安全帽 0.87」更重要，
+  // 两者重叠时优先看清是谁。
+  for (const f of faces) {
+    const [x1, y1, x2, y2] = f.box || [];
+    if (x2 == null) continue;
+    const bx = r.x + x1 * kx, by = r.y + y1 * ky;
+    const bw = (x2 - x1) * kx, bh = (y2 - y1) * ky;
+    const color = f.is_temp ? FACE_COLOR_TEMP : FACE_COLOR_KNOWN;
+
+    _oc.strokeStyle = color;
+    _oc.lineWidth = 2.5;
+    _oc.strokeRect(bx, by, bw, bh);
+    _oc.lineWidth = 2;
+
+    // 已注册只显示姓名；未注册附带访客编号，一眼区分认识与不认识
+    const label = f.is_temp ? `${f.name}（未注册）`
+                            : `${f.name} ${(f.score || 0).toFixed(2)}`;
+    const tw = _oc.measureText(label).width;
+    let ly = by - 4;
+    if (ly - 15 < 0) ly = by + 18;
+    _oc.fillStyle = color;
+    _oc.fillRect(bx, ly - 14, tw + 12, 16);
+    _oc.fillStyle = '#0b1220';
+    _oc.fillText(label, bx + 6, ly - 2);
+  }
 }
 
 function clearOverlay() {
@@ -376,14 +462,21 @@ btnSnap.addEventListener('click', async () => {
   btnSnap.disabled = true;
   try {
     const image = grabFrame(0.92);   // 存档用更高质量
+    // 存档强制带 face_mode：即使当前选「关闭」也要认一次人，
+    // 因为这张图会写进合规统计，需要知道是谁（服务端 save=1 时无条件识别）。
     const r = await fetch('/api/phone/detect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image, kinds: [kind], save: 1 })
+      body: JSON.stringify({ image, kinds: [kind], save: 1, face_mode: faceMode, client: CLIENT_ID })
     });
     const d = await r.json();
-    if (d.ok && d.record_id) toast('已存档（记录 #' + d.record_id + '）');
-    else toast(d.error || '抓拍失败', 'error');
+    if (d.ok && d.record_id) {
+      const who = (d.faces || []).map(f => f.name).join('、');
+      toast('已存档（记录 #' + d.record_id + '）' + (who ? '｜识别到：' + who : ''));
+      if (Array.isArray(d.faces) && d.faces.length) { lastFaces = d.faces; renderCounts(d); }
+    } else {
+      toast(d.error || '抓拍失败', 'error');
+    }
   } catch (e) {
     toast('抓拍失败：' + e.message, 'error');
   } finally {
@@ -403,6 +496,30 @@ document.querySelectorAll('#kindSeg .seg-btn').forEach(b => {
     document.querySelectorAll('#kindSeg .seg-btn').forEach(x => x.classList.remove('active'));
     b.classList.add('active');
     kind = b.dataset.kind;
+  });
+});
+
+/* ---------- 人脸识别模式切换 ---------- */
+const FACE_TIP = {
+  off: '',
+  interval: '人脸识别每 2 秒跑一次（走 CPU），画面保持流畅；识别的姓名会一直显示到下一次识别。',
+  every: '每帧都做人脸识别，实时性最好，但画面会明显变卡 —— 建议短暂定点查看时使用。',
+};
+
+document.querySelectorAll('#faceSeg .seg-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#faceSeg .seg-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    faceMode = b.dataset.fmode;
+    lastFaces = [];
+    const tip = document.getElementById('faceHint');
+    if (faceMode === 'off') {
+      tip.hidden = true;
+    } else {
+      tip.innerHTML = (faceReady ? '' : '<b class="accent">人脸模型未就绪，识别不会生效。</b>')
+                    + (FACE_TIP[faceMode] || '');
+      tip.hidden = false;
+    }
   });
 });
 

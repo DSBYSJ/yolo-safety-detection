@@ -573,11 +573,30 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 .phone-counters .chip { font-size: 13px; padding: 5px 13px; }
 
+/* ---------- 手机端人脸识别 ---------- */
+.phone-face-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.phone-face-label {
+  font-size: 13px; color: var(--muted); white-space: nowrap; flex: none;
+}
+.phone-face-seg { margin-top: 0; }
+.phone-face-seg .seg-btn { padding: 8px 6px; font-size: 13px; }
+
+/* 识别到的人：已注册=青色、访客=橙色，与画布上的人脸框同色系 */
+.chip-face {
+  background: #ecfeff; border-color: #a5f3fc; color: #0e7490;
+  display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.chip-face .fn { font-weight: 700; }
+.chip-face .fn-known { color: #0e7490; }
+.chip-face .fn-temp  { color: #b45309; }
+
 /* 窄屏把操作按钮压成两行，保证每个都够大够点 */
 @media (max-width: 560px) {
   .phone-bar { grid-template-columns: 1fr 1fr; }
   .phone-bar .btn.wide { grid-column: 1 / -1; }
   .phone-stage { border-radius: 10px; }
+  .phone-face-row { flex-direction: column; align-items: stretch; gap: 6px; }
+  .phone-face-label { padding-left: 2px; }
 }
 
 /* ============================================================
@@ -657,3 +676,74 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .stat-grid .stat-card { padding: 13px 14px; }
   .stat-val { font-size: 23px; }
 }
+
+/* ============================================================
+   监控摄像头管理
+   ============================================================ */
+
+.card-head-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 12px;
+}
+.card-head-row .card-title { margin-bottom: 0; }
+
+.hint { font-size: 12.5px; color: var(--muted); }
+
+.cam-list { display: flex; flex-direction: column; gap: 10px; }
+
+.cam-item {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 14px; padding: 13px 15px; border: 1px solid var(--line);
+  border-radius: 12px; background: #fff;
+}
+/* 当前使用中的那一路高亮，一眼看出画面来自哪个摄像头 */
+.cam-item-active { border-color: var(--accent); background: #f7faff; }
+
+.cam-item-main { min-width: 0; flex: 1; }
+.cam-item-main b { font-size: 14px; margin-right: 8px; }
+.cam-item-url {
+  margin-top: 6px; font-size: 12px; color: var(--muted);
+  word-break: break-all; line-height: 1.5;
+}
+.cam-item-meta { margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+.cam-item-actions {
+  display: flex; flex-wrap: wrap; gap: 6px; flex: none;
+  justify-content: flex-end; max-width: 260px;
+}
+
+/* 列表里的小按钮：比 .btn.sm 更紧凑，保证 4 个按钮能排下 */
+.btn.tiny { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+
+.cam-form {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px;
+  margin-bottom: 8px;
+}
+.cam-form .field-wide { grid-column: 1 / -1; }
+.cam-form .field { margin-bottom: 14px; }
+.cam-form .field-label { font-size: 12.5px; color: var(--muted); }
+.cam-form .req { color: var(--danger); font-style: normal; }
+.cam-form input, .cam-form select {
+  width: 100%; padding: 9px 11px; border: 1px solid #d5dce6;
+  border-radius: 9px; font-size: 13.5px; background: #fff; color: var(--ink);
+  font-family: inherit;
+}
+.cam-form input:focus, .cam-form select:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.1);
+}
+.cam-form .field-tip { font-size: 11.5px; color: var(--muted); }
+
+.cam-form-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 4px; }
+
+@media (max-width: 700px) {
+  .cam-form { grid-template-columns: 1fr; }
+  .cam-item { flex-direction: column; }
+  .cam-item-actions { max-width: none; justify-content: flex-start; }
+}
+
+/* ---------- 合规统计：按人判定区块 ---------- */
+.pc-lead { line-height: 1.75; margin: 0 0 14px; }
+.pc-grid { margin-bottom: 6px; }
+.stat-card.bad { border-color: #fecaca; background: #fffafa; }
+.stat-card.bad .stat-val { color: var(--danger); }
+.tbl-empty { text-align: center; color: var(--muted); padding: 22px 8px; }
