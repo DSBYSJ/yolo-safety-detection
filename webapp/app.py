@@ -32,6 +32,7 @@ import db
 import detector
 import face_db
 import imageio_cn
+import panel_checkin
 import phone_face
 import train_manager
 import video_jobs
@@ -45,6 +46,8 @@ app.config["MAX_CONTENT_LENGTH"] = config.MAX_CONTENT_LENGTH
 db.init_db()
 face_db.init_db()
 camera_db.init_db()
+# 面板打卡是独立模块，自己建自己的表，不与 records / face_seen 共用
+panel_checkin.init_db()
 # 首次启动把环境变量里那路摄像头导入配置表，页面上就能直接看到并管理
 camera_db.seed_from_env()
 
@@ -183,6 +186,130 @@ def attendance_page():
         gallery_size=face_db.count_persons(),
         threshold=face_db.MATCH_THRESHOLD,
     )
+
+
+# ---------------------------------------------------------------- 面板打卡 API
+# ⚠️ 这一组接口是「人脸打卡」页专属的独立模块，刻意与上面的
+#    /api/attendance/* 分开：上面那组读 face_seen 流水（系统持续观测到谁来了），
+#    这一组读写 panel_checkin_events（在面板上主动刷脸确认的那一次）。
+#    两者数据源不交叉，改这里不会影响任何其它页面的统计。
+@app.get("/api/attendance/panel/state")
+def api_panel_checkin_state():
+    """面板打卡状态：当日汇总 + 全部打卡事件。"""
+    day = request.args.get("date") or panel_checkin.today()
+    try:
+        day = panel_checkin.validate_day(day)
+        events = panel_checkin.list_events(day)
+        summ = panel_checkin.summary(day)
+    except panel_checkin.PanelCheckinError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"读取打卡状态失败: {e}"}), 500
+    return jsonify(
+        {
+            "ok": True,
+            "date": day,
+            "today": panel_checkin.today(),
+            "events": events,
+            "summary": summ,
+            "cooldown_sec": panel_checkin.COOLDOWN_SEC,
+        }
+    )
+
+
+@app.get("/api/attendance/panel/query")
+def api_panel_checkin_query():
+    """查询某个人当日的打卡状态（已打卡 / 未打卡 + 打卡时间）。"""
+    name = request.args.get("name") or ""
+    day = request.args.get("date") or panel_checkin.today()
+    try:
+        return jsonify({"ok": True, **panel_checkin.status_of(name, day)})
+    except panel_checkin.PanelCheckinError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"查询失败: {e}"}), 500
+
+
+@app.post("/api/attendance/panel/face_checkin")
+def api_panel_face_checkin():
+    """⭐ 人脸识别打卡：接收一帧 base64 图像，识别是谁并打卡。
+
+    请求体 JSON：``{image, note?, date?}``，``image`` 支持
+    ``data:image/jpeg;base64,xxx`` 或纯 base64。
+
+    与手机端检测接口一样是「逐帧」调用，因此必须**快速失败**：
+    等不到推理锁就返回 503 + ``skip``，让前端丢掉这一帧继续下一帧，
+    而不是排队 —— 队列一旦堆积，页面会整体卡死（见 README 六之四第 4 节）。
+
+    人脸识别走 CPU（约 200~400ms/帧），前端调用频率被限制在
+    约 0.5~1 秒一帧，远低于安全帽/口罩检测的帧率，
+    这是刻意的：打卡不需要毫秒级响应，但需要识别准确。
+    """
+    import base64
+
+    body = request.get_json(force=True, silent=True) or {}
+    data_url = body.get("image") or ""
+    if not data_url:
+        return jsonify({"ok": False, "error": "缺少图像数据", "reason": "no_image"}), 400
+    if len(data_url) > _PHONE_MAX_FRAME_BYTES:
+        return jsonify({"ok": False, "error": "图像过大", "reason": "too_large"}), 413
+
+    if "," in data_url[:64]:
+        data_url = data_url.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(data_url, validate=False)
+    except Exception:
+        return jsonify({"ok": False, "error": "图像解码失败", "reason": "bad_image"}), 400
+
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"ok": False, "error": "图像解析失败", "reason": "bad_image"}), 400
+
+    # 人脸在 CPU 上推理，与 YOLO(GPU) 不抢显卡，但 detector 的串行锁
+    # 仍会被摄像头线程占用。这里不参与那条锁，直接跑。
+    try:
+        res = panel_checkin.check_in_by_face(
+            img, day=body.get("date") or "", note=body.get("note") or "",
+            source="panel_face",
+        )
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"打卡失败: {e}", "reason": "error"}), 500
+
+    res["summary"] = panel_checkin.summary(res.get("day") or "")
+    res["size"] = [img.shape[1], img.shape[0]]
+    return jsonify(res)
+
+
+@app.post("/api/attendance/panel/delete")
+def api_panel_checkin_delete():
+    """删除一条打卡事件（误刷撤销）。"""
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        eid = int(body.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "缺少有效的记录 id"}), 400
+    try:
+        ok = panel_checkin.delete_event(eid)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"删除失败: {e}"}), 500
+    if not ok:
+        return jsonify({"ok": False, "error": "记录不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@app.post("/api/attendance/panel/clear")
+def api_panel_checkin_clear():
+    """清空某日全部打卡事件（重置当日面板打卡）。"""
+    body = request.get_json(force=True, silent=True) or {}
+    day = body.get("date") or panel_checkin.today()
+    try:
+        n = panel_checkin.clear_day(day)
+    except panel_checkin.PanelCheckinError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"重置失败: {e}"}), 500
+    return jsonify({"ok": True, "deleted": n})
 
 
 @app.route("/train")

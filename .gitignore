@@ -26,6 +26,13 @@ webapp/*.log
 pretrained/
 yolov8*.pt
 
+# 训练产出的模型权重 —— 体积大（helmet.pt 64MB / mask.pt 22MB），
+# 统一按 README「六之五」自行下载或从训练产物复制，不入库
+models/*.pt
+models/*.onnx
+# 人脸识别模型包（buffalo_l，188MB，超 GitHub 单文件限制）
+models/face/
+
 # HTTPS 证书与私钥 —— 含私钥，绝对禁止入库
 certs/
 *.pem
@@ -34,6 +41,7 @@ certs/
 
 # 工作区临时产物
 .workbuddy/
+.workbuddy-ai/
 .mplcache/
 logs/
 output/

@@ -3,6 +3,127 @@
 {% block pagetitle %}人脸打卡{% endblock %}
 {% block content %}
 
+<!-- ============================================================
+     独立模块：人脸识别打卡
+     只在本页可用。数据源是本模块自己的 panel_checkin_events 表，
+     与下方「今日打卡」的 face_seen 流水完全独立、互不影响。
+     ============================================================ -->
+<div class="card pc-card" id="pcCard">
+  <div class="card-head">
+    <h2 class="card-title">
+      人脸识别打卡
+      <span class="pc-tag">独立模块</span>
+    </h2>
+    <span class="flex-sp"></span>
+    <span class="badge {{ 'info' if ready else 'danger' }}" id="pcModelBadge">
+      {{ '模型就绪' if ready else '模型未就绪' }}
+    </span>
+    <span class="badge" id="pcDayBadge">{{ today }}</span>
+    <button class="btn ghost sm" id="pcHistoryBtn" type="button">打卡记录</button>
+  </div>
+
+  <p class="hint">
+    对着镜头<strong>刷脸即可打卡</strong>：识别到<strong>已注册人员</strong>后自动记录姓名与打卡时刻。
+    本模块与下方基于人脸识别流水的「今日打卡」<strong>互不干涉</strong> ——
+    这里刷不刷脸，都不改变下方的人脸出勤统计；反过来也一样。
+  </p>
+
+  <div class="pc-body">
+    <!-- 左：摄像头取景框 -->
+    <div class="pc-panel pc-cam-panel">
+      <div class="pc-cam" id="pcCam">
+        <video id="pcVideo" playsinline muted autoplay></video>
+        <canvas id="pcCanvas"></canvas>
+        <div class="pc-cam-mask" id="pcCamMask">
+          <div class="pc-cam-icon">◎</div>
+          <div class="pc-cam-txt" id="pcCamTxt">摄像头未启动</div>
+          <div class="pc-cam-sub" id="pcCamSub">点下方按钮开启摄像头后即可刷脸打卡</div>
+        </div>
+        <div class="pc-cam-hud" id="pcCamHud" hidden>
+          <span id="pcHudFps">0 fps</span>
+          <span id="pcHudState"></span>
+        </div>
+      </div>
+
+      <div class="pc-cam-actions">
+        <button class="btn pc-btn pc-btn-inline" id="pcStart" type="button">
+          <span id="pcStartText">开启摄像头</span>
+        </button>
+        <button class="btn ghost pc-btn-inline" id="pcSwitch" type="button" disabled>切换前后</button>
+        <button class="btn pc-btn pc-btn-inline" id="pcCheckin" type="button" disabled>
+          <span id="pcCheckinText">刷脸打卡</span>
+        </button>
+      </div>
+
+      <label class="pc-label pc-label-top" for="pcNote">本次打卡备注（可选）</label>
+      <input class="inp" id="pcNote" placeholder="如：工号 / 部门" maxlength="60" autocomplete="off" disabled>
+
+      <p class="pc-tip" id="pcTip">
+        点「开启摄像头」后对准面部，识别到已注册人员会自动打卡。
+      </p>
+    </div>
+
+    <!-- 右：当前状态 -->
+    <div class="pc-panel pc-status" id="pcStatusBox">
+      <span class="pc-status-label">当前状态</span>
+      <div class="pc-status-main">
+        <span class="pc-dot" id="pcDot"></span>
+        <span class="pc-status-text" id="pcStatusText">未打卡</span>
+      </div>
+      <div class="pc-status-name" id="pcStatusName">等待识别</div>
+
+      <div class="pc-time-row">
+        <span class="pc-time-k">识别到的人</span>
+        <span class="pc-time-v" id="pcWho">—</span>
+      </div>
+      <div class="pc-time-row">
+        <span class="pc-time-k">打卡时间</span>
+        <span class="pc-time-v" id="pcTime">—</span>
+      </div>
+      <div class="pc-time-row">
+        <span class="pc-time-k">今日打卡次数</span>
+        <span class="pc-time-v" id="pcTimes">0</span>
+      </div>
+      <div class="pc-time-row">
+        <span class="pc-time-k">识别相似度</span>
+        <span class="pc-time-v" id="pcScore">—</span>
+      </div>
+
+      <div class="pc-quick" id="pcQuickWrap" hidden>
+        <span class="pc-quick-label">今日已打卡：</span>
+        <div class="pc-chips" id="pcQuickChips"></div>
+      </div>
+
+      <p class="pc-tip pc-tip-note">
+        阈值 {{ '%.2f'|format(threshold) }}，底库 {{ gallery_size }} 人。
+        未录入底库的人无法打卡，请先到「人脸底库」录入。
+      </p>
+    </div>
+  </div>
+
+  <!-- 打卡记录（默认收起，点右上角「打卡记录」展开） -->
+  <div class="pc-history" id="pcHistory" hidden>
+    <div class="pc-history-head">
+      <b>本模块打卡记录</b>
+      <span class="hint" id="pcHistSum">-</span>
+      <span class="flex-sp"></span>
+      <button class="btn ghost sm danger" id="pcClearDay" type="button">重置当日</button>
+    </div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead>
+          <tr><th>打卡人</th><th>打卡时间</th><th>状态</th><th>相似度</th><th>备注</th><th class="w36"></th></tr>
+        </thead>
+        <tbody id="pcHistBody"></tbody>
+      </table>
+    </div>
+    <p class="pc-tip">
+      只列本模块的刷脸打卡事件，<strong>不包含</strong>下方人脸识别的出勤流水。
+      删除某条即为撤销那次误刷。绿框=已打卡，橙框=未打卡。
+    </p>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-head">
     <h2 class="card-title">今日打卡</h2>
@@ -93,6 +214,367 @@
 const today0 = "{{ today }}";
 let chart = null;
 
+/* ============================================================
+   人脸识别打卡（独立模块）
+   -----------------------------------------------------------
+   只调用 /api/attendance/panel/* 这组接口，不触碰下方人脸识别
+   出勤统计的任何数据或函数。前端也保持互不引用：
+   本节只操作 pc* 开头的元素，下面那节只操作 at* 元素。
+   ============================================================ */
+const PC = {
+  day: today0,
+  stream: null,
+  timer: null,
+  running: false,
+  facing: 'user',          // user=前置（自拍打卡更自然）；environment=后置
+  busy: false,
+  lastWho: '',             // 当前镜头前识别到的人（用于状态块显示）
+  fpsT: 0, fpsN: 0, fps: 0,
+  consecutiveFail: 0,      // 连续失败次数，用于指数退避
+
+  el: function (id) { return document.getElementById(id); },
+
+  tip: function (msg, kind) {
+    const t = this.el('pcTip');
+    t.textContent = msg;
+    t.className = 'pc-tip' + (kind ? ' ' + kind : '');
+  },
+
+  /* ---------- 状态块 ---------- */
+  setStatus: function (st, who, score) {
+    const done = st && st.status === 'done';
+    this.el('pcDot').className = 'pc-dot ' + (done ? 'ok' : '');
+    this.el('pcStatusBox').className = 'pc-panel pc-status ' + (done ? 'done' : 'pending');
+    this.el('pcStatusText').textContent = done ? '已打卡' : '未打卡';
+    this.el('pcStatusName').textContent = st && st.person_name
+      ? st.person_name + (done ? ' · 已完成打卡' : ' · 今天还没打卡')
+      : '等待识别';
+    this.el('pcTime').textContent = done ? (st.hm || '—') : '—';
+    this.el('pcTime').title = done ? (st.checkin_at || '') : '';
+    this.el('pcTimes').textContent = (st && st.times) || 0;
+    if (who) this.el('pcWho').textContent = who;
+    if (score !== undefined && score !== null && score !== '') {
+      this.el('pcScore').textContent = Number(score).toFixed(3);
+    }
+  },
+
+  /* ---------- 摄像头 ---------- */
+  start: async function () {
+    if (this.running) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      // HTTPS 门槛：浏览器只在 HTTPS 或 localhost 下允许访问摄像头
+      this.tip('当前环境不允许访问摄像头。请用 https:// 或 localhost 打开本页。', 'err');
+      return;
+    }
+    this.el('pcStart').disabled = true;
+    this.el('pcStartText').textContent = '启动中…';
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: this.facing, width: { ideal: 960 }, height: { ideal: 720 } },
+        audio: false
+      });
+      const v = this.el('pcVideo');
+      v.srcObject = this.stream;
+      await v.play();
+      this.running = true;
+      this.el('pcCamMask').hidden = true;
+      this.el('pcCamHud').hidden = false;
+      this.el('pcStartText').textContent = '停止摄像头';
+      this.el('pcStart').disabled = false;
+      this.el('pcSwitch').disabled = false;
+      this.el('pcCheckin').disabled = false;
+      this.el('pcNote').disabled = false;
+      this.tip('摄像头已开启，请将面部对准镜头，识别到已注册人员会自动打卡。');
+      this.loop();
+    } catch (e) {
+      this.el('pcStart').disabled = false;
+      this.el('pcStartText').textContent = '开启摄像头';
+      const m = (e && e.name) === 'NotAllowedError'
+        ? '摄像头权限被拒绝，请在浏览器地址栏允许后重试。'
+        : '无法打开摄像头：' + (e && e.message ? e.message : e);
+      this.tip(m, 'err');
+    }
+  },
+
+  stop: function () {
+    this.running = false;
+    clearTimeout(this.timer);
+    if (this.stream) {
+      this.stream.getTracks().forEach(t => t.stop());
+      this.stream = null;
+    }
+    this.el('pcCamMask').hidden = false;
+    this.el('pcCamHud').hidden = true;
+    this.el('pcVideo').srcObject = null;
+    this.el('pcStartText').textContent = '开启摄像头';
+    this.el('pcSwitch').disabled = true;
+    this.el('pcCheckin').disabled = true;
+    this.el('pcNote').disabled = true;
+    // 清掉画布上的框，避免停流后残留
+    const cv = this.el('pcCanvas');
+    cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+    this.el('pcCamTxt').textContent = '摄像头未启动';
+    this.el('pcCamSub').textContent = '点下方按钮开启摄像头后即可刷脸打卡';
+  },
+
+  toggle: function () { this.running ? this.stop() : this.start(); },
+
+  switchCam: async function () {
+    this.facing = (this.facing === 'user') ? 'environment' : 'user';
+    if (this.running) {
+      this.stop();
+      await this.start();
+    }
+  },
+
+  /* 把视频当前帧压成 JPEG base64（长边 800px，兼顾识别精度与上行体积） */
+  grab: function () {
+    const v = this.el('pcVideo');
+    if (!v.videoWidth) return null;
+    const LONG = 800;
+    const s = Math.min(1, LONG / Math.max(v.videoWidth, v.videoHeight));
+    const w = Math.round(v.videoWidth * s), h = Math.round(v.videoHeight * s);
+    const cv = this.el('pcCanvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(v, 0, 0, w, h);
+    return { data: cv.toDataURL('image/jpeg', 0.72), w: w, h: h };
+  },
+
+  /* 在画布上画出识别框（绿=已打卡，青=已注册未打卡，橙=未注册） */
+  draw: function (faces, size) {
+    const cv = this.el('pcCanvas');
+    if (!cv.width) return;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    if (!faces || !faces.length) return;
+    const kx = cv.width / (size ? size[0] : cv.width);
+    const ky = cv.height / (size ? size[1] : cv.height);
+    ctx.lineWidth = 2.5;
+    ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
+    ctx.textBaseline = 'bottom';
+    faces.forEach(f => {
+      const b = f.box; if (!b) return;
+      const x = b[0] * kx, y = b[1] * ky, w = (b[2] - b[0]) * kx, h = (b[3] - b[1]) * ky;
+      const color = f.is_temp ? '#d97706'
+                  : (f.checked ? '#16a34a' : '#0891b2');
+      ctx.strokeStyle = color;
+      ctx.strokeRect(x, y, w, h);
+      const label = f.name + (f.is_temp ? '（未注册）'
+                    : (f.score !== undefined ? ' ' + Number(f.score).toFixed(2) : ''));
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, Math.max(0, y - 20), tw + 12, 20);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, x + 6, Math.max(15, y - 4));
+    });
+  },
+
+  /* ---------- 主循环：抓帧 → 请求识别打卡 ---------- */
+  loop: async function () {
+    if (!this.running) return;
+    if (document.hidden) {           // 页面切到后台就停，省电也不空占 CPU
+      this.timer = setTimeout(() => this.loop(), 800);
+      return;
+    }
+    const t0 = performance.now();
+    const frame = this.grab();
+    if (!frame) { this.timer = setTimeout(() => this.loop(), 300); return; }
+
+    try {
+      const r = await fetch('/api/attendance/panel/face_checkin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: frame.data, note: this.el('pcNote').value.trim(), date: this.day })
+      });
+      const d = await r.json();
+      this.consecutiveFail = 0;
+      this.onResult(d, frame);
+    } catch (e) {
+      this.consecutiveFail = Math.min(this.consecutiveFail + 1, 5);
+      this.tip('网络请求失败，正在重试…', 'err');
+    }
+
+    // 帧率统计
+    this.fpsN++;
+    const now = performance.now();
+    if (!this.fpsT) this.fpsT = now;
+    if (now - this.fpsT > 1000) {
+      this.fps = this.fpsN * 1000 / (now - this.fpsT);
+      this.fpsN = 0; this.fpsT = now;
+      this.el('pcHudFps').textContent = this.fps.toFixed(1) + ' fps';
+    }
+
+    // 识别在 CPU 上跑（约 200~400ms），间隔取 900ms：
+    // 既不至于让人等太久，也不会把 CPU 打满。
+    // 连续失败时指数退避，避免服务端还没缓过来就被继续轰。
+    const base = 900 + Math.max(0, performance.now() - t0 - 900);
+    const wait = base * Math.pow(1.6, this.consecutiveFail);
+    this.timer = setTimeout(() => this.loop(), Math.min(wait, 8000));
+  },
+
+  /* ---------- 处理一次识别结果 ---------- */
+  onResult: async function (d, frame) {
+    if (!d || d.ok === undefined) return;
+
+    // 把「已打卡」状态回填到框上，让绿色框有明确含义
+    const faces = (d.faces || []).map(f => Object.assign({}, f, {
+      checked: !!(d.status && d.status.status === 'done' && f.name === d.status.person_name)
+    }));
+    this.draw(faces, d.size || [frame.w, frame.h]);
+
+    if (d.reason === 'done' || d.ok) {
+      // ⭐ 打卡成功
+      this.lastWho = d.status ? d.status.person_name : (d.record ? d.record.person_name : '');
+      this.setStatus(d.status, this.lastWho, d.record ? d.record.score : (d.status ? d.status.score : ''));
+      this.el('pcWho').textContent = this.lastWho;
+      this.el('pcHudState').textContent = '✓ 打卡成功';
+      this.el('pcHudState').style.color = '#16a34a';
+      this.tip(d.message || '打卡成功', 'ok');
+      toast(d.message || '打卡成功', 'ok');
+      await this.loadHistory();
+      // 成功后停一拍再继续 —— 让人看清结果，也避免同一张脸立刻又刷一次
+      return;
+    }
+
+    switch (d.reason) {
+      case 'cooldown':
+        this.el('pcHudState').textContent = '已打卡（冷却中）';
+        this.el('pcHudState').style.color = '#16a34a';
+        this.tip(d.message, 'ok');
+        if (d.status) this.setStatus(d.status, d.status.person_name, d.status.score);
+        break;
+      case 'no_face':
+        this.el('pcHudState').textContent = '未检测到人脸';
+        this.el('pcHudState').style.color = '#6b7280';
+        this.tip('未检测到人脸，请将面部对准镜头。');
+        break;
+      case 'no_registered':
+        this.el('pcHudState').textContent = '人脸未注册';
+        this.el('pcHudState').style.color = '#d97706';
+        if (faces.length) {
+          this.el('pcWho').textContent = faces[0].name + '（未注册）';
+        }
+        this.tip(d.message, 'err');
+        break;
+      case 'no_gallery':
+        this.el('pcHudState').textContent = '底库为空';
+        this.tip(d.message, 'err');
+        break;
+      case 'model_missing':
+        this.el('pcHudState').textContent = '模型未就绪';
+        this.tip(d.message, 'err');
+        break;
+      default:
+        this.el('pcHudState').textContent = '';
+        this.tip(d.message || d.error || '识别失败', 'err');
+    }
+  },
+
+  /* ---------- 打卡记录 ---------- */
+  loadHistory: async function () {
+    let d;
+    try {
+      d = await (await fetch('/api/attendance/panel/state?date='
+        + encodeURIComponent(this.day))).json();
+    } catch (e) { return; }
+    if (!d.ok) return;
+
+    const tb = this.el('pcHistBody');
+    const s = d.summary;
+    this.el('pcHistSum').textContent =
+      `${s.day} · ${s.persons} 人打卡，共 ${s.events} 次` + (s.last_hm ? `，最近 ${s.last_hm}` : '');
+
+    if (!d.events.length) {
+      tb.innerHTML = '<tr><td colspan="6" class="tbl-empty">今日还没有刷脸打卡记录</td></tr>';
+    } else {
+      tb.innerHTML = d.events.map(e => `<tr>
+        <td><b>${esc(e.person_name)}</b></td>
+        <td>${e.hm || '-'}</td>
+        <td><span class="badge ok">已打卡</span></td>
+        <td>${e.score ? e.score.toFixed(3) : '-'}</td>
+        <td>${esc(e.note) || '-'}</td>
+        <td><button class="btn ghost sm danger" data-pc-del="${e.id}"
+             type="button" title="撤销这次打卡">删</button></td>
+      </tr>`).join('');
+    }
+
+    const wrap = this.el('pcQuickWrap');
+    const names = [...new Set(d.events.map(e => e.person_name))];
+    if (names.length) {
+      wrap.hidden = false;
+      this.el('pcQuickChips').innerHTML = names.map(n =>
+        `<span class="pc-chip" title="查看该人今日打卡状态">${esc(n)}</span>`).join('');
+    } else {
+      wrap.hidden = true;
+    }
+  },
+
+  del: async function (id) {
+    try {
+      const r = await fetch('/api/attendance/panel/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: Number(id) })
+      });
+      const d = await r.json();
+      if (!d.ok) { toast(d.error || '删除失败', 'error'); return; }
+      toast('已撤销该条打卡记录', 'ok');
+      this.el('pcWho').textContent = '—';
+      this.el('pcScore').textContent = '—';
+      this.setStatus(null);
+      await this.loadHistory();
+    } catch (e) { toast('删除失败：' + e, 'error'); }
+  },
+
+  clearDay: async function () {
+    if (!confirm('确定要清空本模块今日的全部打卡记录吗？此操作不影响下方人脸识别的出勤统计。')) return;
+    try {
+      const r = await fetch('/api/attendance/panel/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: this.day })
+      });
+      const d = await r.json();
+      if (!d.ok) { toast(d.error || '重置失败', 'error'); return; }
+      toast(`已重置，删除 ${d.deleted} 条记录`, 'ok');
+      this.el('pcWho').textContent = '—';
+      this.el('pcScore').textContent = '—';
+      this.setStatus(null);
+      await this.loadHistory();
+    } catch (e) { toast('重置失败：' + e, 'error'); }
+  }
+};
+
+/* ---------- 事件绑定（全部限定在本模块元素上）---------- */
+document.getElementById('pcStart').addEventListener('click', () => PC.toggle());
+document.getElementById('pcSwitch').addEventListener('click', () => PC.switchCam());
+document.getElementById('pcCheckin').addEventListener('click', () => {
+  // 手动催一次：不必等自动循环的节拍
+  if (!PC.running) { PC.tip('请先开启摄像头', 'err'); return; }
+  clearTimeout(PC.timer);
+  PC.loop();
+});
+document.getElementById('pcHistoryBtn').addEventListener('click', () => {
+  const box = document.getElementById('pcHistory');
+  box.hidden = !box.hidden;
+  document.getElementById('pcHistoryBtn').textContent = box.hidden ? '打卡记录' : '收起记录';
+});
+document.getElementById('pcClearDay').addEventListener('click', () => PC.clearDay());
+document.getElementById('pcHistBody').addEventListener('click', e => {
+  const b = e.target.closest('[data-pc-del]');
+  if (b) PC.del(b.dataset.pcDel);
+});
+// 离开页面时务必关掉摄像头，否则摄像头的指示灯会一直亮着
+window.addEventListener('beforeunload', () => { if (PC.running) PC.stop(); });
+
+PC.loadHistory();
+/* ---------- 人脸识别打卡模块结束 ---------- */
+
+
+/* ============================================================
+   人脸识别打卡统计（原有功能，与本页上方模块互不相干）
+   ============================================================ */
 function pctOrDash(v) {
   return (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
 }

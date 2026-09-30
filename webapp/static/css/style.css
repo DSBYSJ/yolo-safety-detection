@@ -775,7 +775,152 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 .at-note strong { color: var(--ink); }
 
+/* ============================================================
+   人脸识别打卡（人脸打卡页专属的独立模块）
+   ------------------------------------------------------------
+   全部样式以 .pc- 前缀命名。不覆写任何通用类（.card / .btn /
+   .badge 都只做局部微调），因此不会外溢到其它页面。
+   ============================================================ */
+.pc-card { border-left: 3px solid var(--accent); }
+
+/* 「独立模块」小标签：让用户一眼看出这块与下面的统计不是一回事 */
+.pc-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 8px;
+  font-size: 11px; font-weight: 500; border-radius: 999px;
+  background: #eff6ff; color: var(--accent); border: 1px solid #bfdbfe;
+  vertical-align: 1px;
+}
+
+.pc-body { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; }
+
+.pc-panel {
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px 18px; background: #fcfdff;
+}
+
+.pc-label {
+  display: block; font-size: 12.5px; color: var(--muted);
+  margin: 0 0 6px;
+}
+.pc-label-top { margin-top: 14px; }
+
+.pc-panel .inp {
+  width: 100%; padding: 10px 12px; font-size: 14px; font-family: inherit;
+  border: 1px solid #d5dce6; border-radius: 9px; background: #fff;
+  color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s;
+}
+.pc-panel .inp:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
+}
+.pc-panel .inp:disabled { background: #f6f8fb; color: var(--muted); cursor: not-allowed; }
+
+/* ---------- 摄像头取景框 ---------- */
+.pc-cam {
+  position: relative; width: 100%; aspect-ratio: 4 / 3;
+  background: #0b1220; border-radius: 12px; overflow: hidden;
+  border: 1px solid #1e293b;
+}
+.pc-cam video, .pc-cam canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover;
+}
+.pc-cam canvas { pointer-events: none; }
+
+.pc-cam-mask {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 6px;
+  background: #0b1220; color: #94a3b8; text-align: center; padding: 20px;
+}
+.pc-cam-mask[hidden] { display: none; }
+.pc-cam-icon { font-size: 38px; color: #475569; line-height: 1; }
+.pc-cam-txt { font-size: 14px; color: #cbd5e1; font-weight: 600; }
+.pc-cam-sub { font-size: 12px; color: #64748b; line-height: 1.6; }
+
+/* 取景框左上角的实时状态（帧率 + 识别结论），半透明不挡画面 */
+.pc-cam-hud {
+  position: absolute; top: 10px; left: 10px; right: 10px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 12px; pointer-events: none;
+}
+.pc-cam-hud[hidden] { display: none; }
+.pc-cam-hud span {
+  background: rgba(15, 23, 42, .62); color: #e2e8f0;
+  padding: 3px 9px; border-radius: 999px; backdrop-filter: blur(3px);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-cam-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.pc-btn-inline { flex: 1; min-width: 110px; padding: 11px 12px; font-size: 13.5px; }
+
+/* 打卡按钮：本模块唯一的主操作，刻意做得更醒目 */
+.pc-btn {
+  width: 100%; padding: 13px 16px;
+  font-size: 15px; font-weight: 600; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+
+.pc-tip { margin-top: 11px; font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+.pc-tip.ok  { color: var(--ok); }
+.pc-tip.err { color: var(--danger); }
+.pc-tip-note {
+  margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--line);
+  font-size: 12px;
+}
+
+/* ---------- 状态块 ---------- */
+.pc-status { display: flex; flex-direction: column; }
+.pc-status-label { font-size: 12.5px; color: var(--muted); }
+
+.pc-status-main { display: flex; align-items: center; gap: 9px; margin: 10px 0 4px; }
+.pc-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--muted); flex-shrink: 0;
+  transition: background .2s, box-shadow .2s;
+}
+.pc-dot.ok { background: var(--ok); box-shadow: 0 0 0 4px rgba(22, 163, 74, .15); }
+
+.pc-status-text { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.pc-status.done    .pc-status-text { color: var(--ok); }
+.pc-status.pending .pc-status-text { color: var(--muted); }
+
+.pc-status-name { font-size: 12.5px; color: var(--muted); min-height: 18px; }
+
+.pc-time-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 9px 0; border-top: 1px dashed var(--line); margin-top: 0;
+}
+.pc-time-row:first-of-type { margin-top: 10px; }
+.pc-time-k { font-size: 12.5px; color: var(--muted); }
+.pc-time-v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.pc-quick { margin-top: 14px; }
+.pc-quick-label { font-size: 12.5px; color: var(--muted); }
+.pc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.pc-chip {
+  display: inline-block; padding: 4px 11px; border-radius: 999px;
+  font-size: 12.5px; background: #f0fdf4; color: var(--ok);
+  border: 1px solid #bbf7d0; user-select: none;
+}
+
+/* ---------- 打卡记录区 ---------- */
+.pc-history { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
+.pc-history[hidden] { display: none; }
+.pc-history-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.pc-history-head b { font-size: 13.5px; }
+
+@media (max-width: 900px) {
+  .pc-body { grid-template-columns: 1fr; gap: 12px; }
+  /* 手机上把取景框排在前：先开摄像头，再看状态 */
+  .pc-panel { padding: 14px 15px; }
+  .pc-status-text { font-size: 23px; }
+  .pc-cam { aspect-ratio: 3 / 4; }   /* 竖屏下摄像头画面本就偏竖，避免上下留黑边 */
+}
+
 @media (max-width: 640px) {
   .card-head input[type="date"] { flex: 1; }
   .at-chart { height: 220px; }
+  .pc-tag { display: none; }   /* 超小屏标题不挤，模块边界靠卡片样式区分 */
+  .pc-cam-actions { gap: 6px; }
+  .pc-btn-inline { min-width: 0; padding: 11px 8px; font-size: 13px; }
 }

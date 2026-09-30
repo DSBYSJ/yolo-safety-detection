@@ -1692,6 +1692,387 @@ class TestAttendance(unittest.TestCase):
         self.assertLessEqual(len(self.at.trend(days=100000)), 92)
 
 
+class TestPanelCheckin(unittest.TestCase):
+    """人脸识别打卡：人脸打卡页专属的独立模块。
+
+    要钉死的是两件事：
+
+    1. **业务口径** —— 只有已注册的人能打卡、访客拒绝、冷却期防重复刷、
+       打卡时刻取首次而不是最后一次；
+    2. ⭐ **独立性** —— 刷脸结果绝不能流进 ``face_seen`` / ``records``，
+       也绝不能改变 attendance / compliance 的任何数字。
+
+    第 2 点尤其重要：它坏了在界面上完全看不出来，
+    只会让别的报表悄悄多出几条无法解释的数据。
+
+    测试刻意**不加载真实人脸模型**（188MB onnx，单帧 200~400ms）：
+    识别那一层用 ``_FakeFaceDb`` 打桩，只验证本模块自己的分支逻辑。
+    真实识别的准确性属于 face_db 的职责，由 TestFaceIdentify 覆盖。
+    """
+
+    def setUp(self):
+        import config
+
+        self._tmp = tempfile.mkdtemp()
+        self._old_db = config.DB_PATH
+        config.DB_PATH = Path(self._tmp) / "panel_test.db"
+
+        import attendance
+        import face_db
+        import panel_checkin
+
+        self.pc = panel_checkin
+        self.f = face_db
+        self.at = attendance
+        self.pc.close()
+        self.f.close()
+        self.attendance = attendance
+        self.pc.init_db()
+        self.f.init_db()
+        self.pc.reset_cooldown()
+
+    def tearDown(self):
+        import config
+
+        self.pc.reset_cooldown()
+        self.pc.close()
+        self.f.close()
+        config.DB_PATH = self._old_db
+
+    def _vec(self, idx=0):
+        v = np.zeros(512, dtype=np.float32)
+        v[idx] = 1.0
+        return v
+
+    def _img(self):
+        return _img(120, 90)
+
+    # ---------- 打卡 / 状态基本口径 ----------
+    def test_checkin_then_status_done(self):
+        """打卡后状态必须是「已打卡」，并带出打卡时间。"""
+        rec = self.pc.check_in("张三", person_id=1, score=0.91, note="工程部")
+        self.assertEqual(rec["status"], "done")
+        self.assertTrue(rec["hm"])
+        self.assertEqual(rec["times"], 1)
+        self.assertFalse(rec["repeat"])
+
+        st = self.pc.status_of("张三")
+        self.assertEqual(st["status"], "done")
+        self.assertEqual(st["status_cn"], "已打卡")
+        self.assertEqual(st["times"], 1)
+        # checkin_at 必须是完整时间戳，hm 是它的时分部分
+        self.assertEqual(st["checkin_at"][11:16], st["hm"])
+        # 相似度要能取出来展示
+        self.assertAlmostEqual(st["score"], 0.91, places=3)
+
+    def test_status_pending_when_never_checked_in(self):
+        st = self.pc.status_of("查无此人")
+        self.assertEqual(st["status"], "pending")
+        self.assertEqual(st["status_cn"], "未打卡")
+        self.assertEqual(st["times"], 0)
+        self.assertEqual(st["hm"], "")
+
+    def test_repeat_checkin_keeps_first_time(self):
+        """重复打卡不报错，但「打卡时刻」仍取首次。
+
+        首次时间才是打卡时刻 —— 若被后面的时间覆盖，
+        一个 9:00 到岗、午休后又刷一次的人会显示成 13:00 打卡。
+        """
+        first = self.pc.check_in("李四")
+        second = self.pc.check_in("李四", note="第二回")
+        self.assertEqual(second["times"], 2)
+        self.assertTrue(second["repeat"])
+        st = self.pc.status_of("李四")
+        self.assertEqual(st["checkin_at"], first["checkin_at"])
+        self.assertEqual(st["times"], 2)
+
+    def test_summary_counts_persons_not_events(self):
+        self.pc.check_in("甲")
+        self.pc.check_in("甲")
+        self.pc.check_in("乙")
+        s = self.pc.summary(self.pc.today())
+        self.assertEqual(s["persons"], 2)
+        self.assertEqual(s["events"], 3)
+
+    def test_events_sorted_latest_first(self):
+        self.pc.check_in("甲")
+        time.sleep(1)
+        self.pc.check_in("乙")
+        evs = self.pc.list_events(self.pc.today())
+        self.assertEqual([e["person_name"] for e in evs], ["乙", "甲"])
+        for e in evs:
+            self.assertEqual(e["status"], "done")
+
+    # ---------- 按日期隔离 ----------
+    def test_day_isolation(self):
+        self.pc.check_in("甲", day="2026-09-29")
+        self.assertEqual(self.pc.status_of("甲", "2026-09-29")["status"], "done")
+        self.assertEqual(self.pc.status_of("甲", "2026-09-30")["status"], "pending")
+        self.assertEqual(len(self.pc.list_events("2026-09-30")), 0)
+
+    # ---------- 校验 ----------
+    def test_empty_name_rejected(self):
+        for bad in ("", "   ", None):
+            with self.assertRaises(self.pc.PanelCheckinError):
+                self.pc.check_in(bad)
+
+    def test_name_too_long_rejected(self):
+        with self.assertRaises(self.pc.PanelCheckinError):
+            self.pc.check_in("张" * 41)
+
+    def test_note_is_truncated_not_rejected(self):
+        """备注过长要截断，不能因此丢掉一次打卡。"""
+        rec = self.pc.check_in("甲", note="备" * 200)
+        self.assertEqual(len(rec["note"]), self.pc.NOTE_MAX)
+
+    def test_bad_day_rejected(self):
+        for bad in ("2026-13-01", "20260930", "2026/09/30", "", "today"):
+            with self.assertRaises(self.pc.PanelCheckinError):
+                self.pc.validate_day(bad)
+
+    # ---------- 删除 / 重置 ----------
+    def test_delete_event_reverts_to_pending(self):
+        rec = self.pc.check_in("甲")
+        self.assertTrue(self.pc.delete_event(rec["id"]))
+        self.assertEqual(self.pc.status_of("甲")["status"], "pending")
+        self.assertFalse(self.pc.delete_event(999999))   # 不存在返回 False，不抛
+
+    def test_clear_day_only_affects_that_day(self):
+        self.pc.check_in("甲", day="2026-09-29")
+        self.pc.check_in("乙", day="2026-09-30")
+        n = self.pc.clear_day("2026-09-30")
+        self.assertEqual(n, 1)
+        self.assertEqual(self.pc.summary("2026-09-30")["persons"], 0)
+        self.assertEqual(self.pc.summary("2026-09-29")["persons"], 1)
+
+    # ---------- 冷却：防「人还站在镜头前」重复写库 ----------
+    def test_cooldown_blocks_rapid_repeat(self):
+        cooling, _ = self.pc._in_cooldown("甲", self.pc.today())
+        self.assertFalse(cooling)                       # 还没打过，不冷却
+        self.pc.check_in("甲")
+        cooling, gap = self.pc._in_cooldown("甲", self.pc.today())
+        self.assertTrue(cooling, "打卡后应进入冷却期")
+        self.assertLess(gap, self.pc.COOLDOWN_SEC)
+        # 冷却只影响本模块的自动循环，不影响另一天的判断
+        cooling2, _ = self.pc._in_cooldown("甲", "2026-09-29")
+        self.assertFalse(cooling2)
+
+    def test_reset_cooldown_clears_state(self):
+        self.pc.check_in("甲")
+        self.assertTrue(self.pc._in_cooldown("甲", self.pc.today())[0])
+        self.pc.reset_cooldown()
+        self.assertFalse(self.pc._in_cooldown("甲", self.pc.today())[0])
+
+    # ---------- 人脸识别打卡的分支（识别层打桩） ----------
+    def test_face_checkin_no_face(self):
+        """画面里没人 → no_face，而不是报错。"""
+        with _stub_face_db(self.f, persons=[("甲", 1)], faces=[], ready=True):
+            r = self.pc.check_in_by_face(self._img())
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "no_face")
+        self.assertIn("人脸", r["message"])
+        self.assertEqual(self.pc.summary()["events"], 0)
+
+    def test_face_checkin_unregistered_rejected(self):
+        """⭐ 未注册的人必须被拒绝 —— 临时编号会跨重启换号，拿它打卡会产出幽灵记录。"""
+        with _stub_face_db(self.f, persons=[("甲", 1)], ready=True,
+                           faces=[{"bbox": [10, 10, 60, 60], "det_score": 0.9,
+                                   "embedding": self._vec(3)}],
+                           identify_map={3: (None, "访客-1", 0.21, True)}):
+            r = self.pc.check_in_by_face(self._img())
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "no_registered")
+        self.assertFalse(r["recognized"])
+        # 访客框仍要回传，前端才好把「未注册」画在脸上
+        self.assertEqual(len(r["faces"]), 1)
+        self.assertTrue(r["faces"][0]["is_temp"])
+        self.assertEqual(self.pc.summary()["events"], 0, "访客不该产生打卡记录")
+
+    def test_face_checkin_success(self):
+        """已注册的人 → 打卡成功，记录里带上姓名与相似度。"""
+        with _stub_face_db(self.f, persons=[("甲", 1)], ready=True,
+                           faces=[{"bbox": [10, 10, 60, 60], "det_score": 0.9,
+                                   "embedding": self._vec(0)}],
+                           identify_map={0: (1, "甲", 0.88, False)}):
+            r = self.pc.check_in_by_face(self._img(), note="早班")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["reason"], "done")
+        self.assertEqual(r["record"]["person_name"], "甲")
+        self.assertAlmostEqual(r["record"]["score"], 0.88, places=3)
+        self.assertEqual(r["record"]["note"], "早班")
+        self.assertEqual(r["status"]["status"], "done")
+        self.assertEqual(self.pc.summary()["persons"], 1)
+
+    def test_face_checkin_cooldown_second_time(self):
+        """连续两帧都识别到同一人 → 第二次返回 cooldown，不重复写库。"""
+        kw = dict(persons=[("甲", 1)], ready=True,
+                  faces=[{"bbox": [10, 10, 60, 60], "det_score": 0.9,
+                          "embedding": self._vec(0)}],
+                  identify_map={0: (1, "甲", 0.88, False)})
+        with _stub_face_db(self.f, **kw):
+            first = self.pc.check_in_by_face(self._img())
+            second = self.pc.check_in_by_face(self._img())
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertEqual(second["reason"], "cooldown")
+        self.assertTrue(second["recognized"])
+        # 关键：冷却期内没有多写一条
+        self.assertEqual(self.pc.summary()["events"], 1)
+        # 但状态仍要正确回传，前端才能显示「已打卡」
+        self.assertEqual(second["status"]["status"], "done")
+
+    def test_face_checkin_model_missing(self):
+        with _stub_face_db(self.f, ready=False):
+            r = self.pc.check_in_by_face(self._img())
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "model_missing")
+
+    def test_face_checkin_empty_gallery(self):
+        """底库为空时提示「先去录人脸」，比「未识别到」准确得多。"""
+        with _stub_face_db(self.f, persons=[], ready=True):
+            r = self.pc.check_in_by_face(self._img())
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "no_gallery")
+
+    def test_face_checkin_prefers_registered_over_guest(self):
+        """画面里有两个人（一个访客、一个已注册）→ 必须打卡已注册的那个。"""
+        with _stub_face_db(
+            self.f, persons=[("甲", 7)], ready=True,
+            faces=[{"bbox": [10, 10, 60, 60], "det_score": 0.95, "embedding": self._vec(4)},
+                   {"bbox": [70, 10, 120, 60], "det_score": 0.80, "embedding": self._vec(0)}],
+            identify_map={4: (None, "访客-1", 0.20, True),
+                          0: (7, "甲", 0.86, False)},
+        ):
+            r = self.pc.check_in_by_face(self._img())
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["record"]["person_name"], "甲")
+        self.assertEqual(r["record"]["person_id"], 7)
+
+    def test_face_checkin_never_raises_on_garbage(self):
+        """识别层抛异常也必须被兜成 error 结果，不能把页面打崩。"""
+        with _stub_face_db(self.f, persons=[("甲", 1)], ready=True, raise_on_extract=True):
+            r = self.pc.check_in_by_face(self._img())
+        self.assertFalse(r["ok"])
+        self.assertIn(r["reason"], ("error", "no_face"))
+        self.assertIn("message", r)
+
+    # ---------- ⭐ 独立性：本模块最关键的约束 ----------
+    def test_does_not_touch_face_seen(self):
+        """刷脸打卡绝不能往 face_seen 写入 —— 那等于凭空造出「这个人来过」。"""
+        self.f.register("赵六", self._vec(0))
+        with _stub_face_db(self.f, persons=[("赵六", 1)], ready=True,
+                           faces=[{"bbox": [10, 10, 60, 60], "det_score": 0.9,
+                                   "embedding": self._vec(0)}],
+                           identify_map={0: (1, "赵六", 0.9, False)}):
+            self.pc.check_in_by_face(self._img())
+        n = self.f.get_conn().execute("SELECT COUNT(*) FROM face_seen").fetchone()[0]
+        self.assertEqual(n, 0, "刷脸打卡污染了 face_seen")
+
+    def test_does_not_touch_records(self):
+        import db
+
+        db.close()
+        db.init_db()
+        try:
+            self.pc.check_in("甲")
+            n = db.get_conn().execute("SELECT COUNT(*) FROM records").fetchone()[0]
+            self.assertEqual(n, 0, "刷脸打卡污染了 records")
+        finally:
+            db.close()
+
+    def test_attendance_ignores_panel_checkin(self):
+        """⭐ 核心隔离断言：刷脸打卡不能改变人脸识别流水的出勤统计。
+
+        页面上这两个数字并排显示，如果刷脸打卡会把人脸那边的「缺勤」
+        变成「打卡」，用户会看到一个凭空出现的出勤记录而不知从哪来。
+        """
+        self.f.register("钱七", self._vec(0))
+        before = self.at.daily_summary(self.pc.today())
+        self.assertEqual(before["present"], 0)
+        self.assertEqual(before["absent"], 1)
+
+        self.pc.check_in("钱七")            # 刷脸打卡
+
+        after = self.at.daily_summary(self.pc.today())
+        self.assertEqual(after["present"], 0, "刷脸打卡影响了人脸出勤统计")
+        self.assertEqual(after["absent"], 1)
+        self.assertFalse(after["has_record"])
+
+    def test_compliance_ignores_panel_checkin(self):
+        self.f.register("孙八", self._vec(0))
+        self.pc.check_in("孙八")
+        self.assertEqual(self.f.stats_person_compliance(), [], "刷脸打卡污染了合规统计")
+
+    def test_panel_status_independent_of_attendance(self):
+        """反向验证：摄像头流水识别到人，不会让面板显示「已打卡」。
+
+        两条线各自成立 —— 人从镜头前走过但没在面板刷脸，面板就该是未打卡。
+        """
+        self.f.register("周九", self._vec(0))
+        self.f.add_seen(1, "周九", False, 0.95, source="phone")
+        self.assertEqual(self.at.daily_summary(self.pc.today())["present"], 1)
+        self.assertEqual(self.pc.status_of("周九")["status"], "pending",
+                         "摄像头流水串进了面板打卡状态")
+
+    def test_schema_is_own_table(self):
+        tables = {
+            r[0]
+            for r in self.pc.get_conn()
+            .execute("SELECT name FROM sqlite_master WHERE type='table'")
+            .fetchall()
+        }
+        self.assertIn("panel_checkin_events", tables)
+        self.assertTrue("panel_checkin_events".startswith("panel_"))
+
+
+class _stub_face_db:
+    """给 panel_checkin.check_in_by_face 打桩，免去加载 188MB 人脸模型。
+
+    只替换 ``extract_faces`` / ``identify`` / ``count_persons`` /
+    ``face_model_ready`` 这几个被调用的入口，用完原样还原。
+    这样既跑得快，又不会因为真实照片的相似度浮动而变成脆弱测试。
+    """
+
+    def __init__(self, face_db, persons=None, faces=None, identify_map=None,
+                 ready=True, raise_on_extract=False):
+        self.f = face_db
+        self.persons = persons if persons is not None else []
+        self.faces = faces if faces is not None else []
+        self.map = identify_map or {}
+        self.ready = ready
+        self.raise_on_extract = raise_on_extract
+        self._saved = {}
+
+    def __enter__(self):
+        f = self.f
+        for name in ("face_model_ready", "count_persons", "extract_faces", "identify"):
+            self._saved[name] = getattr(f, name)
+
+        f.face_model_ready = lambda: self.ready
+        f.count_persons = lambda: len(self.persons)
+
+        def _extract(_img):
+            if self.raise_on_extract:
+                raise RuntimeError("模拟识别层异常")
+            return self.faces
+
+        f.extract_faces = _extract
+
+        def _identify(emb):
+            # 用 embedding 里非零元素的下标作为「是谁」的标记，
+            # 这样测试可以精确指定每一张脸识别成谁
+            idx = int(np.argmax(np.asarray(emb, dtype=np.float32)))
+            return self.map.get(idx, (None, "访客-X", 0.0, True))
+
+        f.identify = _identify
+        return self
+
+    def __exit__(self, *exc):
+        for name, fn in self._saved.items():
+            setattr(self.f, name, fn)
+        return False
+
+
 def main():
     argv = sys.argv[:]
     if "-v" in argv:
@@ -1722,6 +2103,7 @@ def main():
             TestEquipAttach,
             TestCameraDb,
             TestAttendance,
+            TestPanelCheckin,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)
