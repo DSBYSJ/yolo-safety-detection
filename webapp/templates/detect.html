@@ -1,0 +1,452 @@
+{% extends "base.html" %}
+{% block title %}在线检测 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}在线检测{% endblock %}
+{% block content %}
+<div class="detect-head">
+  <div class="tabs">
+    <button class="tab active" data-tab="img">图片检测</button>
+    <button class="tab" data-tab="video">视频检测</button>
+  </div>
+  <div class="detect-hint muted" id="detectHint">选择图片并勾选检测类型后点击「开始检测」</div>
+</div>
+
+<!-- ============ 图片检测 ============ -->
+<div class="tab-pane" id="pane-img">
+  <div class="grid-detect">
+
+    <!-- 左：操作区 -->
+    <div class="card pane-left">
+      <h3 class="card-title">① 上传图片</h3>
+      <div class="dropzone" id="dzImg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0 -4 4m4-4 4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <p>点击或拖拽图片到此处</p>
+        <span class="muted">支持 JPG / PNG / BMP / WebP，建议不超过 10 MB</span>
+        <input type="file" id="imgFile" accept=".jpg,.jpeg,.png,.bmp,.webp" hidden>
+      </div>
+
+      <!-- 已选文件条 -->
+      <div class="file-chip" id="imgFileChip" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+        <div class="file-chip-txt">
+          <b id="imgFileName">—</b>
+          <span id="imgFileMeta" class="muted">—</span>
+        </div>
+        <button class="file-chip-x" id="imgClear" title="移除">×</button>
+      </div>
+
+      <div class="preview" id="imgPreview" hidden><img id="imgPreviewEl" alt="原图预览"></div>
+
+      <h3 class="card-title mt">② 检测设置</h3>
+      <div class="kind-list">
+        <div class="kind-row">
+          <label class="chk"><input type="checkbox" id="kHelmet" value="helmet" checked> <span class="kind-name">安全帽佩戴</span></label>
+          <div class="kind-conf">
+            <input type="range" class="conf-range" id="confHelmet" min="0.05" max="0.90" step="0.05" value="0.25">
+            <b class="accent conf-val" id="confHelmetVal">0.25</b>
+          </div>
+        </div>
+        <div class="kind-row">
+          <label class="chk"><input type="checkbox" id="kMask" value="mask"> <span class="kind-name">口罩佩戴</span></label>
+          <div class="kind-conf">
+            <input type="range" class="conf-range" id="confMask" min="0.05" max="0.90" step="0.05" value="0.25">
+            <b class="accent conf-val" id="confMaskVal">0.25</b>
+          </div>
+        </div>
+      </div>
+      <div class="field-hint muted">每个检测任务可单独设置置信度阈值：阈值越低检出越多但误报增加，越高越严格但可能漏检。</div>
+
+      <button class="btn wide" id="btnImgDetect">开始检测</button>
+    </div>
+
+    <!-- 右：结果区 -->
+    <div class="card pane-right">
+      <div class="card-head">
+        <h3 class="card-title">检测结果</h3>
+        <div class="result-tools" id="imgTools" hidden>
+          <button class="btn-ghost" id="imgOpen">查看原尺寸</button>
+          <a class="btn-ghost" id="imgDownload" download>下载结果图</a>
+        </div>
+      </div>
+
+      <div class="result-empty" id="imgResultEmpty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+        <p>尚未检测</p>
+        <span class="muted">检测结果将在此处显示</span>
+      </div>
+
+      <div id="imgResult" hidden>
+        <div class="result-telemetry" id="imgMeta"></div>
+        <div class="count-chips" id="imgChips"></div>
+
+        <div class="result-stage">
+          <div class="result-img"><img id="imgResultEl" alt="检测结果"></div>
+        </div>
+
+        <div class="card-sub" id="imgDetWrap" hidden>
+          <div class="card-sub-head">
+            <span>目标明细</span>
+            <span class="muted" id="imgDetCount"></span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="tbl small" id="imgDetTbl">
+              <thead><tr><th>#</th><th>类别</th><th>置信度</th><th>位置 (x1, y1, x2, y2)</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ============ 视频检测 ============ -->
+<div class="tab-pane" id="pane-video" hidden>
+  <div class="grid-detect">
+
+    <!-- 左：操作区 -->
+    <div class="card pane-left">
+      <h3 class="card-title">① 上传视频</h3>
+      <div class="dropzone" id="dzVid">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>
+        <p>点击或拖拽视频到此处</p>
+        <span class="muted">支持 MP4 / AVI / MOV / MKV，逐帧检测后输出标注视频</span>
+        <input type="file" id="vidFile" accept=".mp4,.avi,.mov,.mkv" hidden>
+      </div>
+
+      <div class="file-chip" id="vidFileChip" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>
+        <div class="file-chip-txt">
+          <b id="vidFileName">—</b>
+          <span id="vidFileMeta" class="muted">—</span>
+        </div>
+        <button class="file-chip-x" id="vidClear" title="移除">×</button>
+      </div>
+
+      <h3 class="card-title mt">② 检测设置</h3>
+      <div class="kind-list">
+        <div class="kind-row">
+          <label class="chk"><input type="checkbox" id="vkHelmet" value="helmet" checked> <span class="kind-name">安全帽佩戴</span></label>
+          <div class="kind-conf">
+            <input type="range" class="conf-range" id="vconfHelmet" min="0.05" max="0.90" step="0.05" value="0.25">
+            <b class="accent conf-val" id="vconfHelmetVal">0.25</b>
+          </div>
+        </div>
+        <div class="kind-row">
+          <label class="chk"><input type="checkbox" id="vkMask" value="mask"> <span class="kind-name">口罩佩戴</span></label>
+          <div class="kind-conf">
+            <input type="range" class="conf-range" id="vconfMask" min="0.05" max="0.90" step="0.05" value="0.25">
+            <b class="accent conf-val" id="vconfMaskVal">0.25</b>
+          </div>
+        </div>
+      </div>
+      <div class="field-hint muted" id="vidDurationHint">视频将逐帧推理，耗时约为视频时长的 1～3 倍，请耐心等待。</div>
+
+      <button class="btn wide" id="btnVidDetect">开始检测</button>
+
+      <div class="progress-wrap" id="vidProgress" hidden>
+        <div class="progress-top">
+          <span id="vidStatus" class="muted">准备中…</span>
+          <b class="accent" id="vidPercent">0%</b>
+        </div>
+        <div class="bar"><div class="fill" id="vidFill"></div></div>
+      </div>
+    </div>
+
+    <!-- 右：结果区 -->
+    <div class="card pane-right">
+      <div class="card-head">
+        <h3 class="card-title">检测结果</h3>
+        <div class="result-tools" id="vidTools" hidden>
+          <a class="btn-ghost" id="vidDownload" download>下载结果视频</a>
+        </div>
+      </div>
+
+      <div class="result-empty" id="vidResultEmpty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>
+        <p>尚未检测</p>
+        <span class="muted">先上传视频，再点击「开始检测」</span>
+      </div>
+
+      <div id="vidResult" hidden>
+        <div class="result-telemetry" id="vidMeta"></div>
+        <div class="count-chips" id="vidChips"></div>
+        <div class="result-stage">
+          <video id="vidResultEl" controls playsinline preload="metadata"></video>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ---------------- 标签页 ----------------
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  const isImg = t.dataset.tab === 'img';
+  document.getElementById('pane-img').hidden = !isImg;
+  document.getElementById('pane-video').hidden = isImg;
+  document.getElementById('detectHint').textContent = isImg
+    ? '选择图片并勾选检测类型后点击「开始检测」'
+    : '选择视频并勾选检测类型后点击「开始检测」，逐帧处理需等待';
+}));
+
+// ---------------- 公共 ----------------
+const CN = {helmet:'安全帽', head:'未戴安全帽', mask:'口罩', face:'未戴口罩'};
+const BAD = new Set(['head','face']);
+
+const chipHTML = counts => {
+  const order = ['helmet','head','mask','face'];
+  const list = order.filter(k => counts[k] !== undefined && counts[k] > 0);
+  if (!list.length) return '<span class="chip">未检出目标</span>';
+  const total = list.reduce((s, k) => s + counts[k], 0);
+  const chips = list.map(k =>
+    `<span class="chip ${BAD.has(k) ? 'chip-bad' : 'chip-ok'}">${CN[k]} <b>${counts[k]}</b></span>`
+  ).join('');
+  return `<span class="chip chip-total">共 <b>${total}</b> 个</span>` + chips;
+};
+
+const fmtBytes = n => n < 1024 ? n + ' B'
+  : n < 1048576 ? (n / 1024).toFixed(1) + ' KB'
+  : (n / 1048576).toFixed(1) + ' MB';
+
+const fmtDuration = s => {
+  s = Math.round(s);
+  const m = Math.floor(s / 60), r = s % 60;
+  return m ? `${m} 分 ${r} 秒` : `${r} 秒`;
+};
+
+// 阈值滑块与数值联动
+function bindConf(rangeId, valId) {
+  const r = document.getElementById(rangeId), v = document.getElementById(valId);
+  r.addEventListener('input', () => v.textContent = Number(r.value).toFixed(2));
+}
+['Helmet','Mask'].forEach(k => {
+  bindConf('conf' + k, 'conf' + k + 'Val');
+  bindConf('vconf' + k, 'vconf' + k + 'Val');
+});
+
+// 收集勾选的类别及其阈值
+function collectKinds(prefix) {
+  const out = [];
+  const map = [['kHelmet', 'confHelmet', 'helmet'], ['kMask', 'confMask', 'mask']];
+  for (const [chkId, rangeId, kind] of map) {
+    const id = prefix + chkId;
+    if (document.getElementById(id) && document.getElementById(id).checked) {
+      out.push({kind, conf: parseFloat(document.getElementById(prefix + rangeId).value)});
+    }
+  }
+  return out;
+}
+
+// 阈值不同的多类别：取最低阈值请求一次，保证不漏；
+// 若全部一致则用统一阈值。返回值用于 fd.append('conf', ...)
+function unifiedConf(sel) {
+  if (!sel.length) return 0.25;
+  return Math.min(...sel.map(s => s.conf));
+}
+
+// ---------------- 图片检测 ----------------
+const dzImg = document.getElementById('dzImg'), imgInput = document.getElementById('imgFile');
+dzImg.addEventListener('click', () => imgInput.click());
+dzImg.addEventListener('dragover', e => { e.preventDefault(); dzImg.classList.add('over'); });
+dzImg.addEventListener('dragleave', () => dzImg.classList.remove('over'));
+dzImg.addEventListener('drop', e => {
+  e.preventDefault(); dzImg.classList.remove('over');
+  if (e.dataTransfer.files[0]) { imgInput.files = e.dataTransfer.files; showPreview(); }
+});
+imgInput.addEventListener('change', showPreview);
+
+function showPreview() {
+  const f = imgInput.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = e => {
+    document.getElementById('imgPreviewEl').src = e.target.result;
+    document.getElementById('imgPreview').hidden = false;
+    document.getElementById('dzImg').style.display = 'none';
+  };
+  r.readAsDataURL(f);
+  document.getElementById('imgFileName').textContent = f.name;
+  document.getElementById('imgFileMeta').textContent = fmtBytes(f.size);
+  document.getElementById('imgFileChip').hidden = false;
+}
+
+document.getElementById('imgClear').addEventListener('click', e => {
+  e.stopPropagation();
+  imgInput.value = '';
+  document.getElementById('imgFileChip').hidden = true;
+  document.getElementById('imgPreview').hidden = true;
+  document.getElementById('dzImg').style.display = '';
+});
+
+document.getElementById('btnImgDetect').addEventListener('click', async () => {
+  const f = imgInput.files[0];
+  if (!f) return toast('请先选择图片', 'error');
+  const sel = collectKinds('');
+  if (!sel.length) return toast('请至少选择一种检测类型', 'error');
+
+  const btn = document.getElementById('btnImgDetect');
+  btn.disabled = true; btn.textContent = '检测中…';
+  const fd = new FormData();
+  fd.append('file', f);
+  sel.forEach(s => fd.append('kinds', s.kind));
+  fd.append('conf', unifiedConf(sel));
+  try {
+    const r = await fetch('/api/detect/image', {method: 'POST', body: fd});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || '检测失败');
+
+    document.getElementById('imgResultEmpty').hidden = true;
+    document.getElementById('imgResult').hidden = false;
+    document.getElementById('imgTools').hidden = false;
+
+    const url = d.image_url + '?t=' + Date.now();
+    document.getElementById('imgResultEl').src = url;
+    document.getElementById('imgOpen').onclick = () => window.open(url, '_blank');
+    document.getElementById('imgDownload').href = url;
+    document.getElementById('imgDownload').setAttribute('download',
+      (f.name.replace(/\.[^.]+$/, '') || 'result') + '_detected.jpg');
+
+    document.getElementById('imgChips').innerHTML = chipHTML(d.counts);
+    document.getElementById('imgMeta').innerHTML =
+      `<span class="tlm"><i>耗时</i><b>${d.time_ms}</b> ms</span>` +
+      `<span class="tlm"><i>检出目标</i><b>${d.detections.length}</b></span>` +
+      `<span class="tlm"><i>记录编号</i><b>#${d.record_id}</b></span>`;
+
+    const tb = document.querySelector('#imgDetTbl tbody');
+    if (d.detections.length) {
+      tb.innerHTML = d.detections.map((x, i) =>
+        `<tr><td class="muted">${i + 1}</td>` +
+        `<td><span class="badge ${BAD.has(x.class) ? 'bad' : 'ok'}">${x.class_cn}</span></td>` +
+        `<td>${x.conf.toFixed(3)}</td>` +
+        `<td class="mono">${x.box.join(', ')}</td></tr>`).join('');
+      document.getElementById('imgDetWrap').hidden = false;
+      document.getElementById('imgDetCount').textContent = `共 ${d.detections.length} 条`;
+    } else {
+      document.getElementById('imgDetWrap').hidden = true;
+    }
+    toast('检测完成，记录已保存');
+  } catch (e) { toast(e.message, 'error'); }
+  btn.disabled = false; btn.textContent = '开始检测';
+});
+
+// ---------------- 视频检测 ----------------
+const dzVid = document.getElementById('dzVid'), vidInput = document.getElementById('vidFile');
+dzVid.addEventListener('click', () => vidInput.click());
+dzVid.addEventListener('dragover', e => { e.preventDefault(); dzVid.classList.add('over'); });
+dzVid.addEventListener('dragleave', () => dzVid.classList.remove('over'));
+dzVid.addEventListener('drop', e => {
+  e.preventDefault(); dzVid.classList.remove('over');
+  if (e.dataTransfer.files[0]) { vidInput.files = e.dataTransfer.files; showVidInfo(); }
+});
+vidInput.addEventListener('change', showVidInfo);
+
+function showVidInfo() {
+  const f = vidInput.files[0]; if (!f) return;
+  document.getElementById('vidFileName').textContent = f.name;
+  document.getElementById('vidFileMeta').textContent = fmtBytes(f.size);
+  document.getElementById('vidFileChip').hidden = false;
+  // 读取时长
+  const url = URL.createObjectURL(f);
+  const v = document.createElement('video');
+  v.preload = 'metadata';
+  v.onloadedmetadata = () => {
+    document.getElementById('vidFileMeta').textContent = `${fmtBytes(f.size)} · 时长约 ${fmtDuration(v.duration)}`;
+    document.getElementById('vidDurationHint').textContent =
+      `视频时长约 ${fmtDuration(v.duration)}，逐帧推理预计需要 ${fmtDuration(v.duration * 2)} 左右，请耐心等待。`;
+    URL.revokeObjectURL(url);
+  };
+  v.src = url;
+}
+
+document.getElementById('vidClear').addEventListener('click', e => {
+  e.stopPropagation();
+  vidInput.value = '';
+  document.getElementById('vidFileChip').hidden = true;
+  document.getElementById('vidDurationHint').textContent = '视频将逐帧推理，耗时约为视频时长的 1～3 倍，请耐心等待。';
+});
+
+document.getElementById('btnVidDetect').addEventListener('click', async () => {
+  const f = vidInput.files[0];
+  if (!f) return toast('请先选择视频', 'error');
+  const sel = collectKinds('v');
+  if (!sel.length) return toast('请至少选择一种检测类型', 'error');
+
+  const btn = document.getElementById('btnVidDetect');
+  btn.disabled = true; btn.textContent = '上传/检测中…';
+  const fd = new FormData();
+  fd.append('file', f);
+  sel.forEach(s => fd.append('kinds', s.kind));
+  fd.append('conf', unifiedConf(sel));
+
+  document.getElementById('vidProgress').hidden = false;
+  document.getElementById('vidFill').style.width = '0%';
+  document.getElementById('vidPercent').textContent = '0%';
+  document.getElementById('vidStatus').textContent = '正在上传视频…';
+  try {
+    const r = await fetch('/api/detect/video', {method: 'POST', body: fd});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || '任务创建失败');
+    poll(d.job_id, f.name);
+  } catch (e) {
+    toast(e.message, 'error');
+    document.getElementById('vidProgress').hidden = true;
+    btn.disabled = false; btn.textContent = '开始检测';
+  }
+});
+
+function poll(jobId, origName) {
+  const timer = setInterval(async () => {
+    let d;
+    try {
+      d = await (await fetch('/api/detect/video/status/' + jobId)).json();
+    } catch (e) { return; }
+
+    const pct = Math.round((d.progress || 0) * 100);
+    document.getElementById('vidFill').style.width = pct + '%';
+    document.getElementById('vidPercent').textContent = pct + '%';
+    document.getElementById('vidStatus').textContent =
+      d.status === 'running' ? `逐帧检测中：${d.frames || 0} / ${d.total || '?'} 帧` : '处理中…';
+
+    if (d.status === 'done') {
+      clearInterval(timer);
+      document.getElementById('vidResultEmpty').hidden = true;
+      document.getElementById('vidResult').hidden = false;
+      document.getElementById('vidTools').hidden = false;
+
+      const url = d.video_url + '?t=' + Date.now();
+      const v = document.getElementById('vidResultEl');
+      v.src = url; v.load();
+      document.getElementById('vidDownload').href = url;
+
+      document.getElementById('vidChips').innerHTML = chipHTML(d.counts || {});
+      document.getElementById('vidMeta').innerHTML =
+        `<span class="tlm"><i>总帧数</i><b>${d.frames}</b></span>` +
+        `<span class="tlm"><i>累计检出</i><b>${d.num_objects}</b></span>` +
+        `<span class="tlm"><i>平均单帧</i><b>${d.avg_frame_ms}</b> ms</span>` +
+        `<span class="tlm"><i>记录编号</i><b>#${d.record_id}</b></span>`;
+
+      document.getElementById('vidStatus').textContent = '检测完成';
+      const btn = document.getElementById('btnVidDetect');
+      btn.disabled = false; btn.textContent = '重新检测';
+      toast('视频检测完成，记录已保存');
+    } else if (d.status === 'error') {
+      clearInterval(timer);
+      toast('检测失败：' + d.error, 'error');
+      document.getElementById('vidProgress').hidden = true;
+      const btn = document.getElementById('btnVidDetect');
+      btn.disabled = false; btn.textContent = '开始检测';
+    }
+  }, 1000);
+}
+
+// 结果视频加载失败时给出提示
+document.getElementById('vidResultEl').addEventListener('error', () => {
+  toast('结果视频加载失败，可点击右上角「下载结果视频」后本地播放', 'error');
+});
+</script>
+{% endblock %}

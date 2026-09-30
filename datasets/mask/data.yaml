@@ -1,0 +1,7 @@
+path: ./
+train: images/train
+val: images/val
+nc: 2
+names:
+  0: mask
+  1: face

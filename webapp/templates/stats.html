@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}统计报表 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}统计报表{% endblock %}
+{% block content %}
+<div class="stat-grid">
+  <div class="card stat"><div class="stat-ico ico-blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg></div><div><div class="num" id="sTotal">-</div><div class="lbl">检测记录总数</div></div></div>
+  <div class="card stat"><div class="stat-ico ico-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-8"/></svg></div><div><div class="num" id="sObjects">-</div><div class="lbl">检出目标总数</div></div></div>
+  <div class="card stat"><div class="stat-ico ico-red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4M12 17.5v.5"/></svg></div><div><div class="num" id="sViol">-</div><div class="lbl">违规目标数</div></div></div>
+  <div class="card stat"><div class="stat-ico ico-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div><div><div class="num" id="sToday">-</div><div class="lbl">今日新增记录</div></div></div>
+</div>
+
+<div class="card">
+  <h3 class="card-title">近 14 天检测趋势</h3>
+  <div class="chart" id="chDaily"></div>
+</div>
+<div class="grid-2">
+  <div class="card">
+    <h3 class="card-title">目标类别分布</h3>
+    <div class="chart" id="chClasses"></div>
+  </div>
+  <div class="card">
+    <h3 class="card-title">检测来源占比</h3>
+    <div class="chart" id="chSources"></div>
+  </div>
+</div>
+<div class="card">
+  <h3 class="card-title">平均置信度分布</h3>
+  <div class="chart" id="chConf"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ACCENT = '#2563eb', OK = '#16a34a', BAD = '#dc2626', CYAN = '#0891b2', GRAY = '#94a3b8';
+const axisStyle = {axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}, splitLine:{lineStyle:{color:'#eef2f7'}}};
+
+(async () => {
+  const d = await (await fetch('/api/stats')).json();
+  document.getElementById('sTotal').textContent = d.summary.total_records;
+  document.getElementById('sObjects').textContent = d.summary.total_objects;
+  document.getElementById('sViol').textContent = d.summary.violations;
+  document.getElementById('sToday').textContent = d.summary.today_records;
+
+  // 趋势
+  const daily = echarts.init(document.getElementById('chDaily'));
+  daily.setOption({
+    tooltip: {trigger: 'axis'},
+    legend: {data: ['检测记录数', '检出目标数', '违规目标数'], textStyle: {color: '#475569'}},
+    grid: {left: 48, right: 20, top: 40, bottom: 30},
+    xAxis: {type: 'category', data: d.daily.map(x => x.date), ...axisStyle},
+    yAxis: {type: 'value', ...axisStyle},
+    series: [
+      {name: '检测记录数', type: 'line', smooth: true, data: d.daily.map(x => x.records), itemStyle: {color: ACCENT}, areaStyle: {color: 'rgba(37,99,235,.08)'}},
+      {name: '检出目标数', type: 'line', smooth: true, data: d.daily.map(x => x.objects), itemStyle: {color: OK}},
+      {name: '违规目标数', type: 'line', smooth: true, data: d.daily.map(x => x.violations), itemStyle: {color: BAD}}
+    ]
+  });
+
+  // 类别分布
+  const cls = echarts.init(document.getElementById('chClasses'));
+  const clsData = Object.entries(d.classes).filter(([k, v]) => v > 0)
+    .map(([k, v]) => ({name: k, value: v}));
+  cls.setOption({
+    tooltip: {trigger: 'item'},
+    legend: {bottom: 0, textStyle: {color: '#475569'}},
+    series: [{
+      type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'],
+      label: {color: '#475569'},
+      data: clsData.length ? clsData : [{name: '暂无数据', value: 0}],
+      color: [OK, BAD, CYAN, '#d97706']
+    }]
+  });
+
+  // 来源占比
+  const src = echarts.init(document.getElementById('chSources'));
+  const srcData = Object.entries(d.sources).filter(([k, v]) => v > 0)
+    .map(([k, v]) => ({name: k, value: v}));
+  src.setOption({
+    tooltip: {trigger: 'item'},
+    legend: {bottom: 0, textStyle: {color: '#475569'}},
+    series: [{
+      type: 'pie', radius: '62%', center: ['50%', '44%'],
+      label: {color: '#475569', formatter: '{b}: {c}'},
+      data: srcData.length ? srcData : [{name: '暂无数据', value: 0}],
+      color: [ACCENT, CYAN, '#7c3aed']
+    }]
+  });
+
+  // 置信度分布
+  const conf = echarts.init(document.getElementById('chConf'));
+  conf.setOption({
+    tooltip: {trigger: 'axis'},
+    grid: {left: 48, right: 20, top: 30, bottom: 30},
+    xAxis: {type: 'category', data: d.conf.map(x => x.label), ...axisStyle},
+    yAxis: {type: 'value', ...axisStyle},
+    series: [{type: 'bar', barWidth: '46%', data: d.conf.map(x => x.count), itemStyle: {color: ACCENT, borderRadius: [6, 6, 0, 0]}}]
+  });
+
+  window.addEventListener('resize', () => [daily, cls, src, conf].forEach(c => c.resize()));
+})();
+</script>
+{% endblock %}

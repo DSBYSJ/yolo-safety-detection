@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}模型评估 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}模型评估{% endblock %}
+{% block content %}
+<div class="card" id="evalBar" style="margin-bottom:16px">
+  <div class="filter-bar" style="margin:0">
+    <b>在验证集上运行完整评估（P / R / mAP / 混淆矩阵 / PR 曲线）：</b>
+    <select id="evalKind">
+      <option value="helmet">安全帽模型</option>
+      <option value="mask">口罩模型</option>
+    </select>
+    <button class="btn" id="btnEval">开始评估</button>
+    <span id="evalState" class="badge">空闲</span>
+  </div>
+</div>
+
+{% for kind in ['helmet', 'mask'] %}
+<div class="card" style="margin-bottom:16px">
+  <div class="card-head">
+    <h3 class="card-title">{{ titles[kind] }}评估结果</h3>
+  </div>
+  {% set m = data[kind].metrics %}
+  {% if m %}
+  <div class="metric-grid">
+    <div class="metric"><span>Precision</span><b>{{ '%.4f'|format(m.precision) }}</b></div>
+    <div class="metric"><span>Recall</span><b>{{ '%.4f'|format(m.recall) }}</b></div>
+    <div class="metric hi"><span>mAP@0.5</span><b>{{ '%.4f'|format(m.mAP50) }}</b></div>
+    <div class="metric"><span>mAP@0.5:0.95</span><b>{{ '%.4f'|format(m['mAP50-95']) }}</b></div>
+  </div>
+  <table class="tbl small" style="max-width:720px">
+    <thead><tr><th>类别</th><th>Precision</th><th>Recall</th><th>mAP@0.5</th><th>mAP@0.5:0.95</th></tr></thead>
+    <tbody>
+      {% for c in m.per_class %}
+      <tr><td>{{ c.class_name }}</td><td>{{ '%.4f'|format(c.precision) }}</td><td>{{ '%.4f'|format(c.recall) }}</td>
+          <td class="{{ 'txt-green' if c.mAP50 >= 0.8 else '' }}">{{ '%.4f'|format(c.mAP50) }}</td><td>{{ '%.4f'|format(c['mAP50-95']) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="result-empty">暂无评估结果，点击上方「开始评估」生成</div>
+  {% endif %}
+  {% if data[kind].images %}
+  <div class="img-grid">
+    {% for img in data[kind].images %}
+    <figure><img src="{{ img.url }}" alt="{{ img.name }}" loading="lazy" onclick="openModal('<img src=&quot;{{ img.url }}&quot; style=&quot;max-width:100%&quot;>')"><figcaption>{{ img.name }}</figcaption></figure>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CN = {helmet: '安全帽', head: '未戴安全帽', mask: '口罩', face: '未戴口罩'};
+
+document.getElementById('btnEval').addEventListener('click', async () => {
+  const kind = document.getElementById('evalKind').value;
+  const d = await (await fetch('/api/eval/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({kind})})).json();
+  if (d.ok) { toast('评估任务已启动，请稍候'); pollEval(); }
+  else toast(d.error || '启动失败', 'error');
+});
+
+async function pollEval() {
+  const st = document.getElementById('evalState');
+  const timer = setInterval(async () => {
+    const d = await (await fetch('/api/eval/status')).json();
+    st.textContent = d.running ? ('评估中：' + (CN[d.kind] || d.kind)) : '空闲';
+    st.className = 'badge ' + (d.running ? 'ok' : '');
+    if (!d.running) {
+      clearInterval(timer);
+      if (st.dataset.wasRunning === '1') { toast('评估完成，页面即将刷新'); setTimeout(() => location.reload(), 1200); }
+      st.dataset.wasRunning = '0';
+    } else st.dataset.wasRunning = '1';
+  }, 2000);
+}
+pollEval();
+</script>
+{% endblock %}

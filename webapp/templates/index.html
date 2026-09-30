@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}系统概览 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}系统概览{% endblock %}
+{% block content %}
+<div class="stat-grid">
+  <div class="card stat">
+    <div class="stat-ico ico-blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg></div>
+    <div><div class="num">{{ summary.total_records }}</div><div class="lbl">检测记录总数</div></div>
+  </div>
+  <div class="card stat">
+    <div class="stat-ico ico-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+    <div><div class="num">{{ summary.today_records }}</div><div class="lbl">今日新增记录</div></div>
+  </div>
+  <div class="card stat">
+    <div class="stat-ico ico-green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-8"/></svg></div>
+    <div><div class="num">{{ summary.total_objects }}</div><div class="lbl">检出目标总数</div></div>
+  </div>
+  <div class="card stat">
+    <div class="stat-ico ico-red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 10v4M12 17.5v.5"/></svg></div>
+    <div><div class="num">{{ summary.violations }}</div><div class="lbl">违规目标（未戴帽/未戴口罩）</div></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <h3 class="card-title">模型状态</h3>
+    <div class="model-list">
+      {% for m in model_info %}
+      <div class="model-item">
+        <div class="model-badge {{ 'ok' if m.exists else 'off' }}">{{ '已部署' if m.exists else '未训练' }}</div>
+        <div class="model-main">
+          <b>{{ m.title }}</b>
+          <span>{% if m.exists %}{{ m.file }} · {{ m.size_mb }} MB{% else %}请在「模型训练」页完成训练{% endif %}</span>
+        </div>
+        {% if val_info.get(m.kind) %}
+        <div class="model-map">mAP@0.5 <b>{{ '%.1f'|format(val_info[m.kind].mAP50 * 100) }}%</b></div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <p class="muted-note">模型基于 Ultralytics YOLOv8 在自建/公开数据集上训练；点击左侧「模型评估」查看完整指标与可视化曲线。</p>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">系统简介</h3>
+    <ul class="feat-list">
+      <li><b>在线检测</b> —— 上传图片/视频，自动识别安全帽与口罩佩戴情况</li>
+      <li><b>实时监控</b> —— 调用摄像头进行实时流检测并周期性生成记录</li>
+      <li><b>检测记录</b> —— 全部检测结果入库管理，支持筛选、详情与删除</li>
+      <li><b>统计报表</b> —— 检测趋势、类别分布、置信度分布多维分析</li>
+      <li><b>模型训练 / 评估</b> —— 网页端一键发起 YOLOv8 训练与评估，实时查看损失与 mAP 曲线</li>
+    </ul>
+    <div class="tech-chips">
+      <span>YOLOv8</span><span>Flask</span><span>OpenCV</span><span>SQLite</span><span>ECharts</span><span>PyTorch</span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h3 class="card-title">最近检测记录</h3>
+    <a class="link" href="{{ url_for('records_page') }}">查看全部 →</a>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>时间</th><th>来源</th><th>检测类型</th><th>目标数</th><th>违规数</th><th>结果</th></tr></thead>
+    <tbody>
+      {% for r in recent %}
+      <tr>
+        <td>{{ r.created_at }}</td>
+        <td>{{ {'image':'图片','video':'视频','camera':'摄像头'}.get(r.source_type, r.source_type) }} · {{ (r.source_name or '')[:18] }}</td>
+        <td><span class="badge info">{{ r.kinds or '-' }}</span></td>
+        <td>{{ r.num_objects }}</td>
+        <td class="{{ 'txt-red' if (r.head or 0) + (r.face or 0) > 0 else '' }}">{{ (r.head or 0) + (r.face or 0) }}</td>
+        <td>
+          {% if r.image_path %}<img class="thumb" src="{{ url_for('static', filename=r.image_path) }}" onclick="openModal('<img src=&quot;{{ url_for('static', filename=r.image_path) }}&quot; style=&quot;max-width:100%&quot;>')">
+          {% elif r.video_path %}<span class="badge">视频</span>
+          {% else %}-{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">暂无检测记录，去「在线检测」试试吧</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

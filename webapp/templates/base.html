@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}安全帽/口罩佩戴检测系统{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
+{% block head %}{% endblock %}
+</head>
+<body data-page="{{ page }}">
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v-2a8 8 0 0 1 16 0v2"/><path d="M2 15h20v3.5H2z"/><path d="M12 5V3.5"/></svg>
+      <div class="brand-txt"><b>佩戴检测系统</b><span>YOLOv8 · Helmet &amp; Mask</span></div>
+    </div>
+    <nav>
+      <a href="{{ url_for('index') }}" class="{{ 'active' if page == 'home' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>系统概览</a>
+      <a href="{{ url_for('detect_page') }}" class="{{ 'active' if page == 'detect' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/><path d="M11 8v6M8 11h6"/></svg>在线检测</a>
+      <a href="{{ url_for('camera_page') }}" class="{{ 'active' if page == 'camera' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>实时监控</a>
+      <a href="{{ url_for('records_page') }}" class="{{ 'active' if page == 'records' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>检测记录</a>
+      <a href="{{ url_for('stats_page') }}" class="{{ 'active' if page == 'stats' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>统计报表</a>
+      <a href="{{ url_for('train_page') }}" class="{{ 'active' if page == 'train' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/><circle cx="12" cy="12" r="2.5"/></svg>模型训练</a>
+      <a href="{{ url_for('eval_page') }}" class="{{ 'active' if page == 'eval' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.4 2.4L16 9.5"/></svg>模型评估</a>
+    </nav>
+    <div class="side-foot">Flask · OpenCV · SQLite</div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1>{% block pagetitle %}{% endblock %}</h1>
+      <div id="envChip" class="env-chip"><span class="dot"></span>环境检测中…</div>
+    </header>
+    <section class="content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for cat, msg in messages %}
+          <div class="toast show {{ 'toast-err' if cat == 'error' else 'toast-ok' }}">{{ msg }}</div>
+        {% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </section>
+  </main>
+</div>
+
+<div class="modal" id="modal"><div class="modal-box" id="modalBox"></div></div>
+<script>
+function toast(msg, type) {
+  const t = document.createElement('div');
+  t.className = 'toast show ' + (type === 'error' ? 'toast-err' : 'toast-ok');
+  t.textContent = msg;
+  document.querySelector('.content').prepend(t);
+  setTimeout(() => t.remove(), 3200);
+}
+function openModal(html) {
+  const m = document.getElementById('modal');
+  document.getElementById('modalBox').innerHTML = html;
+  m.classList.add('open');
+}
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target.id === 'modal') e.currentTarget.classList.remove('open');
+});
+(async () => {
+  try {
+    const r = await fetch('/api/env');
+    const d = await r.json();
+    const chip = document.getElementById('envChip');
+    chip.innerHTML = '<span class="dot ' + (d.device === 'CPU' ? 'dot-gray' : 'dot-ok') + '"></span>'
+      + d.device + ' · PyTorch ' + d.torch;
+  } catch (e) {
+    document.getElementById('envChip').innerHTML = '<span class="dot dot-gray"></span>环境未知';
+  }
+})();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

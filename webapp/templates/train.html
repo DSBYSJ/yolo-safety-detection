@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}模型训练 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}模型训练{% endblock %}
+{% block content %}
+<div class="grid-train">
+  <div class="card">
+    <h3 class="card-title">发起训练</h3>
+    <div class="field">
+      <label>数据集 / 任务</label>
+      <select id="tKind">
+        <option value="helmet">安全帽检测（helmet / head）</option>
+        <option value="mask">口罩检测（mask / face）</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>预训练模型（YOLOv8 规模）</label>
+      <select id="tSize">
+        <option value="n">yolov8n —— 最快，适合快速验证</option>
+        <option value="s" selected>yolov8s —— 精度与速度均衡（推荐）</option>
+        <option value="m">yolov8m —— 精度更高，耗时明显增加</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>训练轮数 epochs</label><input type="number" id="tEpochs" value="80" min="10" max="300"></div>
+      <div class="field"><label>图像尺寸 imgsz</label><input type="number" id="tImgsz" value="640" min="320" max="1280" step="32"></div>
+      <div class="field"><label>批大小 batch</label><input type="number" id="tBatch" value="16" min="2" max="64"></div>
+    </div>
+    <button class="btn wide" id="btnTrain">启动训练</button>
+    <div class="note-box">
+      <b>使用提示</b>
+      <ul>
+        <li>需先完成数据集构建（datasets/&lt;kind&gt;/data.yaml 存在）；</li>
+        <li>训练在后台 GPU 上进行，可离开页面，进度实时刷新；</li>
+        <li>训练完成后最优权重自动部署到 models/&lt;kind&gt;.pt 并投入检测服务；</li>
+        <li>8GB 显存建议 batch ≤ 16；若显存不足请调小 batch 或 imgsz。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h3 class="card-title">训练进度</h3>
+      <span class="badge" id="trState">空闲</span>
+    </div>
+    <div class="kv-grid">
+      <div class="kv"><span>当前任务</span><b id="trKind">-</b></div>
+      <div class="kv"><span>轮次进度</span><b id="trEpoch">-</b></div>
+      <div class="kv"><span>最佳 mAP@0.5</span><b id="trBest">-</b></div>
+      <div class="kv"><span>已运行</span><b id="trTime">-</b></div>
+    </div>
+    <div class="bar"><div class="fill" id="trBar" style="width:0%"></div></div>
+    <div class="chart" id="chTrain"></div>
+    <details class="log-box"><summary>训练日志（最近输出）</summary><pre id="trLog"></pre></details>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h3 class="card-title">历史训练记录</h3>
+    <button class="btn ghost sm" id="btnRefreshRuns">刷新</button>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>运行名称</th><th>完成轮数</th><th>最佳 mAP@0.5</th><th>权重文件</th><th>时间</th><th>操作</th></tr></thead>
+    <tbody id="runsTb"><tr><td colspan="6" class="empty">暂无训练记录</td></tr></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let chart = null;
+function ensureChart() {
+  if (!chart) chart = echarts.init(document.getElementById('chTrain'));
+  return chart;
+}
+
+document.getElementById('btnTrain').addEventListener('click', async () => {
+  const body = {
+    kind: document.getElementById('tKind').value,
+    size: document.getElementById('tSize').value,
+    epochs: +document.getElementById('tEpochs').value,
+    imgsz: +document.getElementById('tImgsz').value,
+    batch: +document.getElementById('tBatch').value
+  };
+  if (!confirm('确认开始训练？\n' + body.kind + ' / yolov8' + body.size + ' / ' + body.epochs + ' epochs\n训练耗时可能为数小时')) return;
+  const d = await (await fetch('/api/train/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json();
+  if (d.ok) { toast('训练任务已启动'); pollStatus(); }
+  else toast(d.error || '启动失败', 'error');
+});
+
+function fmtDur(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = Math.floor(sec % 60);
+  return h > 0 ? (h + '时' + m + '分') : (m > 0 ? (m + '分' + s + '秒') : (s + '秒'));
+}
+
+async function pollStatus() {
+  try {
+    const d = await (await fetch('/api/train/status')).json();
+    const st = document.getElementById('trState');
+    st.textContent = d.running ? '训练中' : (d.exit_code === 0 ? '已完成' : (d.exit_code != null ? '已结束(异常)' : '空闲'));
+    st.className = 'badge ' + (d.running ? 'ok' : (d.exit_code === 0 ? 'info' : ''));
+    document.getElementById('trKind').textContent = d.meta.kind ? (d.meta.kind + ' / yolov8' + d.meta.size) : '-';
+    document.getElementById('trEpoch').textContent = d.epoch_done ? (d.epoch_done + ' / ' + d.meta.epochs) : '-';
+    document.getElementById('trBest').textContent = d.best_mAP50 != null ? (d.best_mAP50 * 100).toFixed(2) + '%' : '-';
+    document.getElementById('trTime').textContent = (d.meta.started && d.running) ? fmtDur(Date.now() / 1000 - d.meta.started) : '-';
+    const pct = (d.meta.epochs && d.epoch_done) ? Math.min(100, d.epoch_done / d.meta.epochs * 100) : 0;
+    document.getElementById('trBar').style.width = pct + '%';
+    document.getElementById('trLog').textContent = (d.log || []).join('\n');
+    const h = d.history || [];
+    if (h.length && (d.running || h.length > 1)) {
+      const c = ensureChart();
+      c.setOption({
+        tooltip: {trigger: 'axis'},
+        legend: {data: ['box_loss', 'mAP@0.5'], textStyle: {color: '#475569'}},
+        grid: {left: 56, right: 56, top: 36, bottom: 30},
+        xAxis: {type: 'category', data: h.map(x => x.epoch), axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}},
+        yAxis: [
+          {type: 'value', name: '损失', axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}, splitLine:{lineStyle:{color:'#eef2f7'}}},
+          {type: 'value', name: 'mAP', min: 0, max: 1, axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}, splitLine:{show:false}}
+        ],
+        series: [
+          {name: 'box_loss', type: 'line', smooth: true, showSymbol: false, data: h.map(x => x.box_loss), itemStyle: {color: '#d97706'}},
+          {name: 'mAP@0.5', type: 'line', smooth: true, showSymbol: false, yAxisIndex: 1, data: h.map(x => x.mAP50), itemStyle: {color: '#2563eb'}}
+        ]
+      });
+    }
+  } catch (e) {}
+}
+setInterval(pollStatus, 4000);
+
+async function loadRuns() {
+  const d = await (await fetch('/api/train/runs')).json();
+  const tb = document.getElementById('runsTb');
+  tb.innerHTML = (d.runs || []).map(function(r) {
+    const kind = r.name.indexOf('helmet') === 0 ? 'helmet' : (r.name.indexOf('mask') === 0 ? 'mask' : '');
+    const depBtn = (r.weights && kind)
+      ? '<button class="btn ghost sm" onclick="deploy(\'' + r.name + '\', \'' + kind + '\')">部署为线上模型</button>' : '';
+    return '<tr>' +
+      '<td>' + r.name + '</td>' +
+      '<td>' + r.epochs + '</td>' +
+      '<td>' + (r.best_mAP50 != null ? '<b class="txt-green">' + (r.best_mAP50 * 100).toFixed(2) + '%</b>' : '-') + '</td>' +
+      '<td class="mono">' + (r.weights ? 'best.pt' : '未生成') + '</td>' +
+      '<td>' + r.mtime + '</td>' +
+      '<td>' + depBtn + '</td></tr>';
+  }).join('') || '<tr><td colspan="6" class="empty">暂无训练记录</td></tr>';
+}
+
+async function deploy(run, kind) {
+  if (!confirm('确认把 ' + run + ' 的最优权重部署为线上模型？')) return;
+  const d = await (await fetch('/api/train/deploy', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({run: run, kind: kind})})).json();
+  if (d.ok) toast('部署成功，检测服务将自动加载新权重');
+  else toast(d.error || '部署失败', 'error');
+}
+
+document.getElementById('btnRefreshRuns').addEventListener('click', loadRuns);
+pollStatus(); loadRuns();
+window.addEventListener('resize', function() { if (chart) chart.resize(); });
+</script>
+{% endblock %}

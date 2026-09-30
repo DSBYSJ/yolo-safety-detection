@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}检测记录 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}检测记录{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="filter-bar">
+    <select id="fKind">
+      <option value="">全部类型</option>
+      <option value="helmet">安全帽检测</option>
+      <option value="mask">口罩检测</option>
+    </select>
+    <select id="fSource">
+      <option value="">全部来源</option>
+      <option value="image">图片检测</option>
+      <option value="video">视频检测</option>
+      <option value="camera">实时监控</option>
+    </select>
+    <input type="text" id="fKeyword" placeholder="按文件名搜索…">
+    <button class="btn" id="btnQuery">查询</button>
+    <button class="btn ghost" id="btnReset">重置</button>
+    <span class="flex-sp"></span>
+    <button class="btn danger ghost" id="btnDel">删除选中</button>
+  </div>
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th class="w36"><input type="checkbox" id="chkAll"></th>
+        <th>ID</th><th>时间</th><th>来源</th><th>检测类型</th>
+        <th>目标数</th><th>合规</th><th>违规</th><th>平均置信度</th><th>结果</th><th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="tb"></tbody>
+  </table>
+  <div class="pager">
+    <button class="btn ghost sm" id="pgPrev">上一页</button>
+    <span id="pgInfo">-</span>
+    <button class="btn ghost sm" id="pgNext">下一页</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SRC = {image:'图片', video:'视频', camera:'摄像头'};
+let page = 1, totalPages = 1;
+
+async function load() {
+  const params = new URLSearchParams({
+    page, size: 10,
+    kind: document.getElementById('fKind').value,
+    source: document.getElementById('fSource').value,
+    q: document.getElementById('fKeyword').value
+  });
+  const d = await (await fetch('/api/records?' + params)).json();
+  totalPages = Math.max(1, Math.ceil(d.total / d.size));
+  document.getElementById('pgInfo').textContent = `第 ${d.page} / ${totalPages} 页 · 共 ${d.total} 条`;
+  const tb = document.getElementById('tb');
+  tb.innerHTML = d.records.map(r => {
+    const okN = (r.helmet || 0) + (r.mask || 0);
+    const badN = r.violations;
+    const result = r.image_path
+      ? `<img class="thumb" src="/static/${r.image_path}" onclick="detail(${r.id})">`
+      : (r.video_path ? '<span class="badge info">视频</span>' : '-');
+    return `<tr>
+      <td class="w36"><input type="checkbox" class="row-chk" value="${r.id}"></td>
+      <td>#${r.id}</td>
+      <td>${r.created_at}</td>
+      <td>${SRC[r.source_type] || r.source_type}</td>
+      <td><span class="badge info">${r.kinds || '-'}</span></td>
+      <td>${r.num_objects}</td>
+      <td class="txt-green">${okN}</td>
+      <td class="${badN > 0 ? 'txt-red' : ''}">${badN}</td>
+      <td>${r.avg_conf ? r.avg_conf.toFixed(2) : '-'}</td>
+      <td>${result}</td>
+      <td><button class="btn ghost sm" onclick="detail(${r.id})">详情</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="11" class="empty">暂无记录</td></tr>';
+}
+
+document.getElementById('btnQuery').addEventListener('click', () => { page = 1; load(); });
+document.getElementById('btnReset').addEventListener('click', () => {
+  document.getElementById('fKind').value = '';
+  document.getElementById('fSource').value = '';
+  document.getElementById('fKeyword').value = '';
+  page = 1; load();
+});
+document.getElementById('pgPrev').addEventListener('click', () => { if (page > 1) { page--; load(); } });
+document.getElementById('pgNext').addEventListener('click', () => { if (page < totalPages) { page++; load(); } });
+document.getElementById('chkAll').addEventListener('change', e => {
+  document.querySelectorAll('.row-chk').forEach(c => c.checked = e.target.checked);
+});
+document.getElementById('btnDel').addEventListener('click', async () => {
+  const ids = [...document.querySelectorAll('.row-chk:checked')].map(c => +c.value);
+  if (!ids.length) return toast('请先勾选要删除的记录', 'error');
+  if (!confirm(`确认删除选中的 ${ids.length} 条记录？`)) return;
+  const d = await (await fetch('/api/records/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})})).json();
+  if (d.ok) { toast('删除成功'); load(); } else toast(d.error, 'error');
+});
+
+async function detail(id) {
+  const d = await (await fetch('/api/records/' + id)).json();
+  if (!d.ok) return toast(d.error, 'error');
+  const r = d.record;
+  let media = '-';
+  if (r.image_path) media = `<img class="detail-img" src="/static/${r.image_path}">`;
+  else if (r.video_path) media = `<video class="detail-video" src="/static/${r.video_path}" controls></video>`;
+  const rows = (r.detail_list || []).map(x =>
+    `<tr><td><span class="badge ${x.class==='head'||x.class==='face'?'bad':'ok'}">${x.class_cn || x.class}</span></td><td>${x.conf.toFixed(3)}</td><td class="mono">${(x.box || []).join(', ')}</td></tr>`).join('');
+  openModal(`
+    <div class="modal-head"><b>检测记录 #${r.id}</b><button class="btn ghost sm" onclick="document.getElementById('modal').classList.remove('open')">关闭</button></div>
+    <div class="modal-body">
+      ${media}
+      <div class="kv-grid">
+        <div class="kv"><span>时间</span><b>${r.created_at}</b></div>
+        <div class="kv"><span>来源</span><b>${SRC[r.source_type] || ''} · ${r.source_name || ''}</b></div>
+        <div class="kv"><span>检测类型</span><b>${r.kinds || '-'}</b></div>
+        <div class="kv"><span>目标 / 违规</span><b>${r.num_objects} / <i class="txt-red">${(r.head||0)+(r.face||0)}</i></b></div>
+        <div class="kv"><span>推理耗时</span><b>${r.duration_ms || '-'} ms</b></div>
+      </div>
+      ${rows ? `<table class="tbl small"><thead><tr><th>类别</th><th>置信度</th><th>位置</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
+    </div>`);
+}
+
+load();
+</script>
+{% endblock %}

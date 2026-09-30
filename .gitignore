@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 数据集原始文件与生成数据（体积大，不入库）
+datasets/raw/
+datasets/helmet/images/
+datasets/helmet/labels/
+datasets/mask/images/
+datasets/mask/labels/
+
+# 训练输出
+runs/
+
+# Web 运行时产物
+webapp/uploads/
+webapp/static/results/
+webapp/data.db
+webapp/train_logs/
+webapp/*.log
+
+# 预训练权重（体积大，按需自行下载，不入库）
+pretrained/
+yolov8*.pt
+
+# 工作区临时产物
+.workbuddy/
+.mplcache/
+logs/
+output/
+
+# 文档产物（本地生成，不入库）
+*.docx
+*.doc
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# SQLite WAL 临时文件
+webapp/data.db-shm
+webapp/data.db-wal
+webapp/data.db-journal
