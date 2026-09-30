@@ -21,6 +21,7 @@
     <span class="flex-sp"></span>
     <button class="btn danger ghost" id="btnDel">删除选中</button>
   </div>
+  <div class="tbl-wrap">
   <table class="tbl">
     <thead>
       <tr>
@@ -31,6 +32,7 @@
     </thead>
     <tbody id="tb"></tbody>
   </table>
+  </div>
   <div class="pager">
     <button class="btn ghost sm" id="pgPrev">上一页</button>
     <span id="pgInfo">-</span>
@@ -117,7 +119,7 @@ async function detail(id) {
         <div class="kv"><span>目标 / 违规</span><b>${r.num_objects} / <i class="txt-red">${(r.head||0)+(r.face||0)}</i></b></div>
         <div class="kv"><span>推理耗时</span><b>${r.duration_ms || '-'} ms</b></div>
       </div>
-      ${rows ? `<table class="tbl small"><thead><tr><th>类别</th><th>置信度</th><th>位置</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
+      ${rows ? `<div class="tbl-wrap"><table class="tbl small"><thead><tr><th>类别</th><th>置信度</th><th>位置</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
     </div>`);
 }
 

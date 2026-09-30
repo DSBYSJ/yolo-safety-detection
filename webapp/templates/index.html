@@ -61,6 +61,7 @@
     <h3 class="card-title">最近检测记录</h3>
     <a class="link" href="{{ url_for('records_page') }}">查看全部 →</a>
   </div>
+  <div class="tbl-wrap">
   <table class="tbl">
     <thead><tr><th>时间</th><th>来源</th><th>检测类型</th><th>目标数</th><th>违规数</th><th>结果</th></tr></thead>
     <tbody>
@@ -82,5 +83,6 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endblock %}

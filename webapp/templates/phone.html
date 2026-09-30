@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% block title %}手机检测 - 安全帽/口罩佩戴检测系统{% endblock %}
+{% block pagetitle %}手机实时检测{% endblock %}
+
+{% block content %}
+<div class="phone-wrap">
+
+  <div class="card">
+    <div class="phone-stage">
+      <video id="cam" playsinline autoplay muted></video>
+      <img id="annotated" alt="检测画面" hidden>
+      <div class="phone-hint" id="hint">点击下方按钮启动摄像头</div>
+      <div class="phone-fps" id="fpsChip" hidden>-- fps</div>
+    </div>
+
+    <div class="phone-bar">
+      <button class="btn wide" id="btnStart">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>
+        启动摄像头
+      </button>
+      <button class="btn ghost" id="btnFlip" disabled title="在前后摄像头之间切换">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+        翻转
+      </button>
+      <button class="btn ghost" id="btnSnap" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5h3l1.5-2h9L18 8.5h3v10H3z"/><circle cx="12" cy="13" r="3"/></svg>
+        抓拍存档
+      </button>
+      <button class="btn ghost danger" id="btnStop" disabled>停止</button>
+    </div>
+
+    <div class="seg phone-seg" id="kindSeg">
+      <button class="seg-btn active" data-kind="helmet">安全帽</button>
+      <button class="seg-btn" data-kind="mask">口罩</button>
+    </div>
+
+    <div class="phone-counters" id="counters">
+      <span class="chip chip-total">等待检测…</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">使用说明</h3>
+    <div class="note-box">
+      <ul>
+        <li><b>画面完全在本机处理</b>：手机摄像头画面逐帧发送到运行本系统的电脑/服务器推理，不经过第三方；</li>
+        <li>为流畅起见，检测帧率自动限制在约 8 帧/秒，不影响识别效果；</li>
+        <li>点「抓拍存档」才会把当前画面写入检测记录，日常预览不留痕；</li>
+        <li>若提示无法启动摄像头，通常是浏览器要求 <b>HTTPS 或 localhost</b> 才允许访问摄像头，详见下方提示。</li>
+      </ul>
+    </div>
+    <div class="field-hint" id="httpsTip" hidden>
+      <b class="accent">当前是 HTTP 访问，浏览器可能拒绝开启摄像头。</b>
+      三种解决办法：<br>
+      ① 用 <b>localhost</b> 访问（浏览器对 localhost 放行）；<br>
+      ② 给服务配 HTTPS（自签证书或域名证书）；<br>
+      ③ Chrome 里打开 <span class="mono">chrome://flags/#unsafely-treat-insecure-origin-as-secure</span>，
+      把本站地址加入白名单后重启浏览器（仅调试用）。
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CN = {helmet:'安全帽', head:'未戴安全帽', mask:'口罩', face:'未戴口罩'};
+const CN_BAD = {head:'未戴安全帽', face:'未戴口罩'};
+
+const cam = document.getElementById('cam');
+const annotated = document.getElementById('annotated');
+const hint = document.getElementById('hint');
+const fpsChip = document.getElementById('fpsChip');
+const btnStart = document.getElementById('btnStart');
+const btnFlip = document.getElementById('btnFlip');
+const btnSnap = document.getElementById('btnSnap');
+const btnStop = document.getElementById('btnStop');
+
+let stream = null;
+let running = false;
+let facing = 'environment';   // 默认后置，拍工地方便
+let kind = 'helmet';
+let timer = null;
+let busy = false;             // 防止请求堆积
+let frames = 0, fpsT0 = 0;
+
+/* ---------- 摄像头开关 ---------- */
+async function start() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    // HTTP 下部分浏览器直接不暴露该 API
+    showHint('当前浏览器不支持摄像头调用，或页面不是 HTTPS/localhost 环境');
+    document.getElementById('httpsTip').hidden = false;
+    return;
+  }
+  btnStart.disabled = true;
+  showHint('正在请求摄像头权限…');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+  } catch (e) {
+    // NotAllowedError=用户拒绝 / NotFoundError=没有摄像头 / NotReadableError=被占用
+    const map = {
+      NotAllowedError: '摄像头权限被拒绝，请在浏览器地址栏左侧的权限设置中允许后重试',
+      NotFoundError: '没有检测到可用摄像头',
+      NotReadableError: '摄像头被其他应用占用，请关闭后重试',
+      OverconstrainedError: '摄像头不支持所需分辨率',
+    };
+    showHint(map[e.name] || ('无法启动摄像头：' + e.name));
+    if (location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(location.hostname)) {
+      document.getElementById('httpsTip').hidden = false;
+    }
+    btnStart.disabled = false;
+    return;
+  }
+
+  cam.srcObject = stream;
+  cam.hidden = false;
+  annotated.hidden = true;
+  hint.style.display = 'none';
+  running = true;
+  frames = 0; fpsT0 = performance.now();
+  fpsChip.hidden = false;
+
+  btnStart.disabled = true;
+  btnFlip.disabled = false;
+  btnSnap.disabled = false;
+  btnStop.disabled = false;
+  btnStart.textContent = '运行中';
+
+  loop();
+}
+
+function stop() {
+  running = false;
+  clearTimeout(timer);
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  cam.srcObject = null;
+  cam.hidden = true;
+  annotated.hidden = true;
+  fpsChip.hidden = true;
+  showHint('已停止。点击「启动摄像头」重新开始');
+  btnStart.disabled = false;
+  btnFlip.disabled = true;
+  btnSnap.disabled = true;
+  btnStop.disabled = true;
+  btnStart.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>启动摄像头';
+  document.getElementById('counters').innerHTML = '<span class="chip chip-total">等待检测…</span>';
+}
+
+function showHint(text) {
+  hint.textContent = text;
+  hint.style.display = 'flex';
+}
+
+/* ---------- 逐帧检测循环 ---------- */
+async function loop() {
+  if (!running) return;
+  if (!busy && cam.readyState >= 2 && cam.videoWidth) {
+    busy = true;
+    try {
+      await detectOnce();
+      frames++;
+      const dt = (performance.now() - fpsT0) / 1000;
+      if (dt >= 1) {
+        const fps = (frames / dt).toFixed(1);
+        fpsChip.textContent = fps + ' fps';
+        frames = 0; fpsT0 = performance.now();
+      }
+    } catch (e) {
+      // 单帧失败不中断循环，保持画面连续
+    } finally {
+      busy = false;
+    }
+  }
+  if (running) timer = setTimeout(loop, 120);   // ≈8fps，足够流畅且省电
+}
+
+/** 把当前视频帧压成 JPEG base64 发给服务端推理 */
+function grabFrame(quality) {
+  // 长边限制在 960px，兼顾清晰度与上传体积（手机原图动辄数 MB）
+  const maxSide = 960;
+  let w = cam.videoWidth, h = cam.videoHeight;
+  if (Math.max(w, h) > maxSide) {
+    const s = maxSide / Math.max(w, h);
+    w = Math.round(w * s); h = Math.round(h * s);
+  }
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').drawImage(cam, 0, 0, w, h);
+  return c.toDataURL('image/jpeg', quality || 0.7);
+}
+
+async function detectOnce() {
+  const image = grabFrame(0.7);
+  const r = await fetch('/api/phone/detect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image, kinds: [kind] })
+  });
+  const d = await r.json();
+  if (!d.ok) { showHint(d.error || '检测失败'); return; }
+  renderCounts(d);
+}
+
+function renderCounts(d) {
+  const c = d.counts || {};
+  const bad = (c.head || 0) + (c.face || 0);
+  const total = d.num_objects || 0;
+  let html = `<span class="chip chip-total">目标 ${total}</span>`;
+  Object.keys(c).filter(k => c[k] > 0).forEach(k => {
+    const isBad = CN_BAD[k] !== undefined;
+    if (isBad) html += `<span class="chip chip-bad">${CN[k]} ${c[k]}</span>`;
+  });
+  if (bad > 0) {
+    html += `<span class="chip chip-bad">⚠ 违规 ${bad}</span>`;
+  } else if (total > 0) {
+    html += `<span class="chip chip-ok">✓ 全部合规</span>`;
+  }
+  document.getElementById('counters').innerHTML = html;
+}
+
+/* ---------- 抓拍存档（这一帧才落库） ---------- */
+btnSnap.addEventListener('click', async () => {
+  if (!running) return;
+  btnSnap.disabled = true;
+  try {
+    const image = grabFrame(0.92);   // 存档用更高质量
+    const r = await fetch('/api/phone/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, kinds: [kind], save: 1 })
+    });
+    const d = await r.json();
+    if (d.ok && d.record_id) toast('已存档（记录 #' + d.record_id + '）');
+    else toast(d.error || '抓拍失败', 'error');
+  } catch (e) {
+    toast('抓拍失败：' + e.message, 'error');
+  } finally {
+    btnSnap.disabled = false;
+  }
+});
+
+/* ---------- 前后摄像头切换 ---------- */
+btnFlip.addEventListener('click', async () => {
+  facing = facing === 'environment' ? 'user' : 'environment';
+  if (running) { stop(); await start(); }
+});
+
+/* ---------- 检测类型切换 ---------- */
+document.querySelectorAll('#kindSeg .seg-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#kindSeg .seg-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    kind = b.dataset.kind;
+  });
+});
+
+btnStart.addEventListener('click', start);
+btnStop.addEventListener('click', stop);
+
+/* 页面切到后台时暂停，避免无谓地耗电与占用 GPU */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && running) {
+    clearTimeout(timer);
+  } else if (!document.hidden && running) {
+    loop();
+  }
+});
+
+/* 进入页面时提示 HTTPS 限制，让用户提前知道原因 */
+if (location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(location.hostname)) {
+  document.getElementById('httpsTip').hidden = false;
+}
+window.addEventListener('pagehide', () => { if (stream) stream.getTracks().forEach(t => t.stop()); });
+</script>
+{% endblock %}

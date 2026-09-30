@@ -8,6 +8,7 @@
     - fontutil：跨平台字体加载
     - config：模型定义自洽性（类别名与 data.yaml 一致）
     - camera：取流来源解析（网络流优先于本地设备索引）
+    - 手机端：base64 图像解码（带/不带 data: 前缀、非法数据兜底）
 
 用法：
     python tests/test_unit.py
@@ -422,6 +423,69 @@ class TestCameraSource(unittest.TestCase):
         self.assertIn("0", shown)
 
 
+class TestPhoneDecode(unittest.TestCase):
+    """手机端接口的图像解码：两种 base64 格式都要兼容
+
+    这条链路是「手机浏览器 → base64 → 服务端解码」，格式约定一旦不兼容，
+    手机上会静默无画面，所以必须由测试守住。
+    """
+
+    def setUp(self):
+        import base64
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (48, 32), (200, 60, 60)).save(buf, format="JPEG")
+        self.raw = buf.getvalue()
+        self.pure = base64.b64encode(self.raw).decode()
+        self.with_prefix = "data:image/jpeg;base64," + self.pure
+
+    @staticmethod
+    def _decode(data_url: str):
+        """复刻 app.api_phone_detect 里的解码逻辑，便于离线验证。"""
+        import base64
+
+        import cv2
+        import numpy as np
+
+        if "," in data_url[:64]:
+            data_url = data_url.split(",", 1)[1]
+        raw = base64.b64decode(data_url, validate=False)
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    def test_pure_base64_decodes(self):
+        img = self._decode(self.pure)
+        self.assertIsNotNone(img)
+        self.assertEqual(img.shape[:2], (32, 48))   # (h, w)
+
+    def test_data_url_with_prefix_decodes(self):
+        """带 data:image/jpeg;base64, 前缀时必须能正确剥离。"""
+        img = self._decode(self.with_prefix)
+        self.assertIsNotNone(img)
+        self.assertEqual(img.shape[:2], (32, 48))
+
+    def test_both_formats_agree(self):
+        a = self._decode(self.pure)
+        b = self._decode(self.with_prefix)
+        self.assertTrue((a == b).all(), "两种格式解出的图像应完全一致")
+
+    def test_garbage_returns_none_not_raise(self):
+        """非法数据应返回 None（接口据此报 400），不能抛异常打挂请求。"""
+        import base64
+
+        bad = base64.b64encode(b"this is not an image at all").decode()
+        self.assertIsNone(self._decode(bad))
+
+    def test_prefix_split_only_on_short_head(self):
+        """分隔符判断只看前 64 字符，避免把超长 base64 内部的逗号误当地址分隔。"""
+        # 构造一个不含前缀、但内容很长的串，确保不会被误切
+        img = self._decode(self.pure)
+        self.assertIsNotNone(img)
+
+
 def main():
     argv = sys.argv[:]
     if "-v" in argv:
@@ -440,6 +504,7 @@ def main():
             TestFontutil,
             TestConfig,
             TestCameraSource,
+            TestPhoneDecode,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)

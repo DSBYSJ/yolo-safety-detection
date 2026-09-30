@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 import cv2
+import numpy as np
 from flask import (
     Flask,
     abort,
@@ -268,6 +269,92 @@ def api_camera_snapshot():
     return jsonify({"ok": True, "record_id": rid, "image_url": f"static/{img_path}"})
 
 
+# ------------------------------------------- 手机端（浏览器直接调摄像头）
+# 手机浏览器通过 getUserMedia 拿到本地画面，逐帧把 JPEG 发到这里推理。
+# 与 /camera/feed 的区别：那条链路是「服务端摄像头 → 浏览器」，
+# 这条是「浏览器摄像头 → 服务端推理 → 浏览器」，因此手机无需装推流 App。
+_PHONE_MAX_FRAME_BYTES = 6 * 1024 * 1024   # 单帧上限 6MB，防止异常大图打满内存
+
+
+@app.post("/api/phone/detect")
+def api_phone_detect():
+    """接收手机浏览器传来的一帧图像，返回标注图与计数。
+
+    默认**不落库** —— 逐帧落库会在几秒内产生上千条记录。
+    只有显式传 save=1（用户点「抓拍存档」）时才写入。
+    """
+    import base64
+
+    body = request.get_json(force=True, silent=True) or {}
+    data_url = body.get("image") or ""
+    if not data_url:
+        return jsonify({"ok": False, "error": "缺少图像数据"}), 400
+    if len(data_url) > _PHONE_MAX_FRAME_BYTES:
+        return jsonify({"ok": False, "error": "图像过大"}), 413
+
+    # 接受两种格式：data:image/jpeg;base64,xxx 或纯 base64
+    if "," in data_url[:64]:
+        data_url = data_url.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(data_url, validate=False)
+    except Exception:
+        return jsonify({"ok": False, "error": "图像解码失败"}), 400
+
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"ok": False, "error": "图像解析失败"}), 400
+
+    kinds = body.get("kinds") or ["helmet"]
+    if isinstance(kinds, str):
+        kinds = [kinds]
+    try:
+        conf = min(0.9, max(0.05, float(body.get("conf", 0.25))))
+    except (TypeError, ValueError):
+        conf = 0.25
+
+    try:
+        dets, counts, annotated, tms = detector.infer_image(img, kinds, conf=conf)
+    except ModelMissingError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    resp = {
+        "ok": True,
+        "counts": counts,
+        "db_cols": detector.counts_to_db(counts),
+        "num_objects": sum(counts.values()),
+        "time_ms": tms,
+        "size": [img.shape[1], img.shape[0]],
+    }
+
+    # 只在用户点「抓拍存档」时落盘 + 落库
+    if str(body.get("save", "")).lower() in ("1", "true", "yes"):
+        out_name = f"phone_{_rand_name('.jpg')}"
+        if not imageio_cn.imwrite(config.RESULT_DIR / out_name, annotated):
+            return jsonify({"ok": False, "error": "结果图保存失败"}), 500
+        rec_id = db.insert_record(
+            source_type="camera",
+            source_name="手机网页摄像头",
+            kinds="+".join(detector.detect_kinds(kinds)),
+            num_objects=sum(counts.values()),
+            avg_conf=round(sum(d["conf"] for d in dets) / len(dets), 3) if dets else 0,
+            duration_ms=tms,
+            image_path=f"results/{out_name}",
+            details=dets[:200],
+            **detector.counts_to_db(counts),
+        )
+        resp["record_id"] = rec_id
+        resp["image_url"] = f"static/results/{out_name}"
+
+    return jsonify(resp)
+
+
+@app.get("/phone")
+def phone_page():
+    """手机端检测页：用浏览器自带摄像头实时检测"""
+    return render_template("phone.html", page="phone")
+
+
 # ---------------------------------------------------------------- 记录 API
 @app.get("/api/records")
 def api_records():
@@ -388,6 +475,20 @@ def api_eval_metrics(kind):
 
 
 # ---------------------------------------------------------------- 启动
+def _local_ip() -> str:
+    """尽力获取本机局域网 IP，仅用于启动时打印可访问地址。"""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 if __name__ == "__main__":
     try:
         import torch
@@ -395,9 +496,28 @@ if __name__ == "__main__":
         device = "CUDA (GPU)" if torch.cuda.is_available() else "CPU"
     except Exception:
         device = "CPU"
+
+    # 可选 HTTPS：手机浏览器访问摄像头要求 HTTPS 或 localhost。
+    # 设了这两个环境变量就以 HTTPS 启动，否则维持 HTTP。
+    ssl_cert = os.environ.get("FLASK_SSL_CERT", "").strip()
+    ssl_key = os.environ.get("FLASK_SSL_KEY", "").strip()
+    use_ssl = bool(ssl_cert and ssl_key)
+    scheme = "https" if use_ssl else "http"
+
     print("=" * 60)
     print("  安全帽/口罩佩戴检测系统  |  YOLOv8 + Flask")
     print(f"  计算设备: {device}")
-    print("  访问地址: http://127.0.0.1:5000")
+    print(f"  本机访问: {scheme}://127.0.0.1:5000")
+    print(f"  手机访问: {scheme}://{_local_ip()}:5000")
+    if use_ssl:
+        print("  模式: HTTPS（手机可直接调用摄像头）")
+    else:
+        print("  模式: HTTP —— 手机端调摄像头受浏览器限制，")
+        print("        需配 HTTPS 或用 chrome://flags 白名单，详见 README「六之四」")
     print("=" * 60)
-    app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)
+
+    if use_ssl:
+        app.run(host="0.0.0.0", port=5000, threaded=True, debug=False,
+                ssl_context=(ssl_cert, ssl_key))
+    else:
+        app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)

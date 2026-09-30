@@ -27,7 +27,8 @@
     <div class="metric hi"><span>mAP@0.5</span><b>{{ '%.4f'|format(m.mAP50) }}</b></div>
     <div class="metric"><span>mAP@0.5:0.95</span><b>{{ '%.4f'|format(m['mAP50-95']) }}</b></div>
   </div>
-  <table class="tbl small" style="max-width:720px">
+  <div class="tbl-wrap">
+  <table class="tbl small">
     <thead><tr><th>类别</th><th>Precision</th><th>Recall</th><th>mAP@0.5</th><th>mAP@0.5:0.95</th></tr></thead>
     <tbody>
       {% for c in m.per_class %}
@@ -36,6 +37,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <div class="result-empty">暂无评估结果，点击上方「开始评估」生成</div>
   {% endif %}

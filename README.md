@@ -50,14 +50,15 @@
     │   ├── db.py                  # SQLite 记录管理
     │   ├── imageio_cn.py          # 图像读写（兼容非 ASCII 路径）
     │   ├── fontutil.py            # 跨平台中文字体加载
-    │   ├── templates/             # 7 个页面模板
+    │   ├── templates/             # 8 个页面模板（含手机端 /phone）
     │   └── static/                # 样式 / ECharts / 检测结果图
     ├── scripts/
     │   ├── make_demo_video.py     # 生成演示视频（用于视频检测测试）
-    │   └── list_cameras.py        # 枚举本机设备索引 / 探测网络流地址（接入手机摄像头时用）
+    │   ├── list_cameras.py        # 枚举本机设备索引 / 探测网络流地址（接入手机摄像头时用）
+    │   └── check_mobile.py        # 移动端适配验证（手机视口逐页截图 + 溢出检测）
     ├── tests/
-    │   ├── test_unit.py           # 离线单元测试（35 项，无需服务/GPU）
-    │   └── regression.py          # 端到端回归测试（21 项，需服务运行中）
+    │   ├── test_unit.py           # 离线单元测试（51 项，无需服务/GPU）
+    │   └── regression.py          # 端到端回归测试（27 项，需服务运行中）
     ├── requirements.txt
     └── README.md
 
@@ -132,12 +133,16 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 | `CAMERA_FRAME_WIDTH` | `1280` | 本地摄像头采集宽度（对网络流无效，流分辨率由推流端决定） |
 | `CAMERA_FRAME_HEIGHT` | `720` | 本地摄像头采集高度（同上） |
 | `CAMERA_STREAM_TIMEOUT` | `8` | 打开网络流时的超时秒数，失败后自动重试 |
+| `FLASK_SSL_CERT` | 空 | HTTPS 证书路径。与 `FLASK_SSL_KEY` 同时设置才启用 HTTPS |
+| `FLASK_SSL_KEY` | 空 | HTTPS 私钥路径 |
 | `SECRET_KEY` | 开发默认值 | Flask 会话密钥，生产环境务必注入 |
 
     # 把摄像头切到索引 1 的设备
     CAMERA_INDEX=1 python webapp/app.py
     # 改用手机推的 RTSP 流
     CAMERA_SOURCE="rtsp://192.168.1.100:554/h264" python webapp/app.py
+    # 启用 HTTPS（手机端调摄像头需要）
+    FLASK_SSL_CERT=certs/cert.pem FLASK_SSL_KEY=certs/key.pem python webapp/app.py
     # Windows CMD
     set CAMERA_INDEX=1 && python webapp/app.py
 
@@ -198,6 +203,77 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 | 虚拟摄像头连接成功但画面黑屏 | 先确认客户端预览正常；再试 `list_cameras.py --backend dshow` |
 | 手机掉线后画面不恢复 | 抓帧线程每 5 秒自动重连，确认手机端 App 仍在运行、IP 未变 |
 | 网络流延迟明显高于虚拟摄像头 | 属正常现象。RTSP 比 MJPEG(HTTP) 延迟低；优先用 5GHz Wi-Fi 或网线 |
+
+## 六之四、手机端页面与浏览器直接检测
+
+以上「六之三」是**手机当摄像机给电脑用**。本节是另一条路：
+**手机直接打开网页，用手机自己的摄像头做检测**（无需装任何 App、无需推流）。
+
+### 1. 打开方式
+
+手机浏览器访问 `http://<电脑局域网IP>:5000/phone`，或在侧边栏点「手机检测」。
+
+页面里点「启动摄像头」授权后即可看到实时检测画面与违规计数。
+右上角显示实时帧率，底部 chips 显示每类目标数量与合规判断。
+
+### 2. ⚠️ 摄像头权限的 HTTPS 门槛
+
+浏览器出于安全策略，**只在 HTTPS 或 localhost 下才允许网页访问摄像头**。
+所以直接用 `http://192.168.x.x:5000/phone` 访问时，Chrome/Safari 会拒绝授权。
+三种解法（按推荐度排序）：
+
+| 方案 | 做法 | 适用 |
+| --- | --- | --- |
+| **自签证书 + HTTPS** | 用 `openssl` 生成证书，Flask 以 `ssl_context` 启动 | 局域网长期使用，一劳永逸 |
+| **Chrome 白名单** | 打开 `chrome://flags/#unsafely-treat-insecure-origin-as-secure`，填入本站地址后重启 | 临时调试最快 |
+| **换浏览器** | 部分国产浏览器对 HTTP 摄像头限制较松 | 应急 |
+
+生成自签证书并用 HTTPS 启动（示例）：
+
+    # 1. 生成证书（有效期 365 天，CN 与 SAN 都填你的局域网 IP）
+    mkdir certs
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem \
+      -days 365 -subj "/CN=192.168.1.100" \
+      -addext "subjectAltName=IP:192.168.1.100,DNS:localhost"
+
+    # 2. 用 HTTPS 启动
+    FLASK_SSL_CERT=certs/cert.pem FLASK_SSL_KEY=certs/key.pem python webapp/app.py
+
+    # Windows CMD
+    set FLASK_SSL_CERT=certs/cert.pem && set FLASK_SSL_KEY=certs/key.pem && python webapp/app.py
+
+手机首次访问会提示「证书不受信任」，选择「继续访问」即可（自签证书的必然提示）。
+启动日志会打印出手机可访问的完整地址，直接照着输入即可。
+
+⚠️ **`certs/` 已加入 `.gitignore`** —— 里面是私钥，绝对不要提交到仓库。
+
+### 3. 实现要点
+
+- 手机浏览器用 `getUserMedia` 抓画面 → 压成 JPEG（长边 960px）→ base64 → POST `/api/phone/detect`
+- 服务端解码后在 GPU 上推理，返回计数与合规判断；**实测稳态往返约 97ms（≈10 fps）**
+- 前端限流到约 **8 帧/秒**，既流畅又不让手机发烫
+- **预览不落库**：只有点「抓拍存档」才会写一条检测记录，避免逐帧产生上千条垃圾数据
+- 页面切到后台自动暂停，回来继续（省电、不空占 GPU）
+- 支持前后摄像头切换（默认后置，拍工地场景更合适）
+
+### 4. 移动端适配
+
+全站 8 个页面均已适配手机：
+
+- 侧边栏在 ≤900px 变成**抽屉式**，左上角汉堡按钮开合，带遮罩与滑入动画
+- 表格统一包在横向滚动容器里（检测记录有 11 列，手机上必须横滑）
+- 按钮、导航项触控高度 ≥44px；图表高度自动降低避免占满整屏
+- 超小屏（≤640px）环境徽章只留圆点，顶栏不拥挤
+- 适配刘海屏安全区（`env(safe-area-inset-top)`）
+- 横屏手机单独调优，打印时隐藏导航
+
+用脚本自查适配效果（手机视口逐页截图 + 横向溢出检测）：
+
+    python scripts/check_mobile.py
+    python scripts/check_mobile.py --only /phone --outdir ./shots
+
+它会用 Chrome DevTools Protocol 精确把视口设成 390×844，
+测量 `scrollWidth` 是否超过视口，并指出具体是哪个元素溢出。
 
 ## 六之二、功能测试
 

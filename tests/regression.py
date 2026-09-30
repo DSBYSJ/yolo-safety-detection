@@ -87,8 +87,8 @@ def http_code(base, path, timeout=20):
 # 测试项
 # --------------------------------------------------------------------------- #
 def test_pages(base):
-    print("\n【1】页面可达性（7 个）")
-    for p in ["/", "/detect", "/camera", "/records", "/stats", "/train", "/eval"]:
+    print("\n【1】页面可达性（8 个）")
+    for p in ["/", "/detect", "/camera", "/phone", "/records", "/stats", "/train", "/eval"]:
         code = http_code(base, p)
         check(f"页面 {p}", code == 200, f"HTTP {code}")
 
@@ -161,8 +161,79 @@ def test_detect_image(base, imgs, conf):
             check("结果图落盘并可访问", False, f"异常 {e}（可能触发了中文路径写图失败）")
 
 
+def test_phone_api(base, imgs):
+    """手机端检测接口：base64 图像上传、默认不落库、非法输入兜底"""
+    print("\n【4】手机端检测接口")
+    img = imgs.get("helmet")
+    if not img:
+        skip("手机端检测", "缺少 helmet 测试图")
+        return
+
+    import base64
+    import json as _json
+
+    b64 = base64.b64encode(img.read_bytes()).decode()
+
+    def call(payload):
+        req = urllib.request.Request(
+            f"{base}/api/phone/detect",
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=90) as r:
+            return _json.loads(r.read())
+
+    # 1) 正常推理
+    try:
+        d = call({"image": "data:image/jpeg;base64," + b64, "kinds": ["helmet"]})
+        check(
+            "手机端推理",
+            d.get("ok") and d.get("num_objects") is not None,
+            f"counts={d.get('counts')} {d.get('time_ms', 0):.0f}ms",
+        )
+        # 2) 默认不落库（逐帧落库会瞬间产生上千条记录）
+        check("预览不落库", "record_id" not in d, "未返回 record_id")
+    except Exception as e:
+        check("手机端推理", False, f"异常 {e}")
+
+    # 3) 带 save=1 才落库
+    try:
+        d = call({"image": b64, "kinds": ["helmet"], "save": 1})
+        check("存档落库", bool(d.get("record_id")), f"record_id={d.get('record_id')}")
+        # 清理这条测试记录，避免污染仓库数据
+        if d.get("record_id"):
+            rid = d["record_id"]
+            req = urllib.request.Request(
+                f"{base}/api/records/delete",
+                data=_json.dumps({"ids": [rid]}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=30).read()
+        # 顺手删掉结果图（delete 接口只清库不清文件）
+        url = d.get("image_url", "")
+        if url:
+            fp = ROOT / "webapp" / url.replace("static/", "static/", 1)
+            if fp.exists():
+                fp.unlink()
+    except Exception as e:
+        check("存档落库", False, f"异常 {e}")
+
+    # 4) 异常输入兜底
+    for label, payload in [
+        ("空图像被拒", {"image": ""}),
+        ("非法数据被拒", {"image": "not-an-image-@@@"}),
+    ]:
+        try:
+            call(payload)
+            check(label, False, "未按预期报错")
+        except urllib.error.HTTPError as e:
+            check(label, e.code == 400, f"HTTP {e.code}")
+        except Exception as e:
+            check(label, False, f"异常 {e}")
+
+
 def test_error_handling(base, imgs):
-    print("\n【4】异常处理")
+    print("\n【5】异常处理")
     # 非法扩展名
     bad = ROOT / "tests" / "_bad_format.txt"
     bad.write_text("not an image")
@@ -185,7 +256,7 @@ def test_error_handling(base, imgs):
 
 
 def test_records(base):
-    print("\n【5】检测记录")
+    print("\n【6】检测记录")
     d = get_json(base, "/api/records?page=1&page_size=5")
     recs = d.get("records", [])
     check("/api/records 分页查询", d.get("ok") and d.get("total", 0) >= 0,
@@ -197,7 +268,7 @@ def test_records(base):
 
 
 def test_stats(base):
-    print("\n【6】统计报表")
+    print("\n【7】统计报表")
     s = get_json(base, "/api/stats")
     need = {"summary", "daily", "classes", "sources", "conf"}
     missing = need - set(s.keys())
@@ -206,7 +277,7 @@ def test_stats(base):
 
 
 def test_eval_metrics(base):
-    print("\n【7】模型评估指标")
+    print("\n【8】模型评估指标")
     for k in ("helmet", "mask"):
         try:
             m = get_json(base, f"/api/eval/metrics/{k}")
@@ -247,6 +318,7 @@ def main():
     test_pages(base)
     test_env(base)
     test_detect_image(base, imgs, args.conf)
+    test_phone_api(base, imgs)
     test_error_handling(base, imgs)
     test_records(base)
     test_stats(base)

@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1726">
+<meta name="format-detection" content="telephone=no">
 <title>{% block title %}安全帽/口罩佩戴检测系统{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -10,10 +12,14 @@
 </head>
 <body data-page="{{ page }}">
 <div class="layout">
-  <aside class="sidebar">
+  <div class="side-mask" id="sideMask"></div>
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v-2a8 8 0 0 1 16 0v2"/><path d="M2 15h20v3.5H2z"/><path d="M12 5V3.5"/></svg>
       <div class="brand-txt"><b>佩戴检测系统</b><span>YOLOv8 · Helmet &amp; Mask</span></div>
+      <button class="side-close" id="sideClose" aria-label="关闭菜单">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
     </div>
     <nav>
       <a href="{{ url_for('index') }}" class="{{ 'active' if page == 'home' }}">
@@ -22,6 +28,8 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/><path d="M11 8v6M8 11h6"/></svg>在线检测</a>
       <a href="{{ url_for('camera_page') }}" class="{{ 'active' if page == 'camera' }}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>实时监控</a>
+      <a href="{{ url_for('phone_page') }}" class="{{ 'active' if page == 'phone' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10.5 18.5h3"/><circle cx="12" cy="8.5" r="2.2"/></svg>手机检测</a>
       <a href="{{ url_for('records_page') }}" class="{{ 'active' if page == 'records' }}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>检测记录</a>
       <a href="{{ url_for('stats_page') }}" class="{{ 'active' if page == 'stats' }}">
@@ -36,6 +44,9 @@
 
   <main class="main">
     <header class="topbar">
+      <button class="nav-toggle" id="navToggle" aria-label="打开菜单" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
       <h1>{% block pagetitle %}{% endblock %}</h1>
       <div id="envChip" class="env-chip"><span class="dot"></span>环境检测中…</div>
     </header>
@@ -52,6 +63,30 @@
 
 <div class="modal" id="modal"><div class="modal-box" id="modalBox"></div></div>
 <script>
+/* ---------- 移动端抽屉导航 ---------- */
+(function () {
+  const body = document.body;
+  const toggle = document.getElementById('navToggle');
+  const close = document.getElementById('sideClose');
+  const mask = document.getElementById('sideMask');
+
+  function setOpen(open) {
+    body.classList.toggle('nav-open', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // 抽屉展开时锁住背景滚动，避免误滑导致页面跳动
+    body.style.overflow = open ? 'hidden' : '';
+  }
+  toggle.addEventListener('click', () => setOpen(!body.classList.contains('nav-open')));
+  close.addEventListener('click', () => setOpen(false));
+  mask.addEventListener('click', () => setOpen(false));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setOpen(false); });
+
+  // 视口放大到桌面宽度时复位，防止抽屉状态残留导致布局异常
+  const mq = window.matchMedia('(min-width: 901px)');
+  const onChange = e => { if (e.matches) setOpen(false); };
+  mq.addEventListener ? mq.addEventListener('change', onChange) : mq.addListener(onChange);
+})();
+
 function toast(msg, type) {
   const t = document.createElement('div');
   t.className = 'toast show ' + (type === 'error' ? 'toast-err' : 'toast-ok');
@@ -73,7 +108,9 @@ document.getElementById('modal').addEventListener('click', e => {
     const d = await r.json();
     const chip = document.getElementById('envChip');
     chip.innerHTML = '<span class="dot ' + (d.device === 'CPU' ? 'dot-gray' : 'dot-ok') + '"></span>'
-      + d.device + ' · PyTorch ' + d.torch;
+      + '<span class="env-text">' + d.device + ' · PyTorch ' + d.torch + '</span>';
+    // 超小屏只显示圆点，用 title 保留完整信息（可长按/悬停查看）
+    chip.title = d.device + ' · PyTorch ' + d.torch;
   } catch (e) {
     document.getElementById('envChip').innerHTML = '<span class="dot dot-gray"></span>环境未知';
   }

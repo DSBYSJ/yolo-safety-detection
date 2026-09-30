@@ -26,6 +26,12 @@ webapp/*.log
 pretrained/
 yolov8*.pt
 
+# HTTPS 证书与私钥 —— 含私钥，绝对禁止入库
+certs/
+*.pem
+*.key
+*.crt
+
 # 工作区临时产物
 .workbuddy/
 .mplcache/
