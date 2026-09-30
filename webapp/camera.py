@@ -192,11 +192,50 @@ def set_kind(kind: str) -> None:
         _state["kind"] = kind if kind in config.MODELS else "helmet"
 
 
+def _mask_source(url: str) -> str:
+    """脱敏取流地址里的密码。
+
+    RTSP 地址形如 rtsp://admin:密码@192.168.1.64:554/...，
+    这个字符串会经 /api/camera/state 回传并显示在页面上。
+    若原样返回，摄像头密码就会暴露在浏览器和接口响应里，
+    截个图或看一眼网络请求就泄漏了。这里把用户名/密码替换成 ***。
+    """
+    if not url:
+        return url
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(url)
+        if parts.password is None:
+            return url          # 本来就没密码，原样返回
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        # 保留用户名便于辨认用的是哪个账号，只把密码打掉
+        user = parts.username or ""
+        netloc = f"{user}:***@{host}" if user else f"***@{host}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:  # noqa: BLE001
+        # 解析失败就整串打码，宁可看不清也不泄漏
+        return "***"
+
+
 def get_state() -> dict:
     with _lock:
         s = dict(_state)
         s.pop("jpeg", None)
-        return s
+
+    # 附带当前取流来源，供前端判断：是「已接入正在出画面」，
+    # 还是「没配来源/配错了」需要显示接入引导。
+    # 注意这里返回的是配置态（每次读环境变量），不是线程内的运行态，
+    # 所以用户改了配置重启后，页面能立刻反映新来源。
+    source, is_stream, shown = resolve_source()
+    s["source"] = {
+        "value": _mask_source(source) if is_stream else "",
+        "kind": "stream" if is_stream else "device",
+        "label": _mask_source(shown),
+    }
+    return s
 
 
 def mjpeg_generator():

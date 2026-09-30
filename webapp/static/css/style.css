@@ -270,6 +270,20 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .cam-wrap img { width: 100%; display: block; }
 .cam-off { color: #94a3b8; font-size: 13px; padding: 40px; text-align: center; }
 .cam-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
+
+/* 监控摄像头接入引导（/camera 页未检测到视频源时显示） */
+.setup-tabs { display: inline-flex; background: #f1f5f9; border-radius: 10px; padding: 4px; gap: 4px; margin: 14px 0 4px; }
+.setup-tabs .seg-btn { flex: 1; min-width: 140px; }
+.setup-pane { padding-top: 6px; }
+.setup-lead { font-size: 13px; color: var(--muted); margin: 8px 0 10px; line-height: 1.6; }
+.setup-steps { padding-left: 20px; display: flex; flex-direction: column; gap: 9px; font-size: 13px; line-height: 1.65; color: var(--ink); }
+.setup-steps ul { padding-left: 18px; margin-top: 5px; display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12.5px; }
+.setup-tip { color: var(--muted); font-size: 12px; }
+.setup-code {
+  display: block; margin: 7px 0 0; padding: 9px 11px; background: #0f172a; color: #a5f3fc;
+  border-radius: 8px; font-family: Consolas, monospace; font-size: 12px;
+  line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+}
 .seg { display: inline-flex; background: #f1f5f9; border-radius: 10px; padding: 4px; gap: 4px; }
 .seg-btn { border: none; background: transparent; padding: 7px 16px; border-radius: 8px; font-size: 13px; cursor: pointer; color: var(--muted); }
 .seg-btn.active { background: #fff; color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}实时监控 - 安全帽/口罩佩戴检测系统{% endblock %}
-{% block pagetitle %}实时监控（摄像头检测）{% endblock %}
+{% block pagetitle %}实时监控（监控摄像头接入）{% endblock %}
 {% block content %}
 <div class="grid-camera">
   <div class="card">
@@ -21,7 +21,8 @@
   <div class="card">
     <h3 class="card-title">监控状态</h3>
     <div class="kv-list" id="camState">
-      <div class="kv"><span>摄像头</span><b id="stCam">连接中…</b></div>
+      <div class="kv"><span>视频源</span><b id="stSource">-</b></div>
+      <div class="kv"><span>连接状态</span><b id="stCam">连接中…</b></div>
       <div class="kv"><span>当前检测类型</span><b id="stKind">安全帽检测</b></div>
       <div class="kv"><span>推理速度</span><b id="stFps">-</b></div>
       <div class="kv"><span>最近一帧目标</span><b id="stCounts">-</b></div>
@@ -31,10 +32,70 @@
       <ul>
         <li>画面每帧经 YOLOv8 推理后以 MJPEG 流回传到浏览器；</li>
         <li>检测到目标时，每 5 秒自动保存一条检测记录（含标注截图），可在「检测记录」页查看；</li>
-        <li>点击「抓拍存档」可立即保存当前画面与检测统计；</li>
-        <li>若提示未检测到摄像头，请检查设备连接与占用情况。</li>
+        <li>点击「抓拍存档」可立即保存当前画面与检测统计。</li>
       </ul>
     </div>
+  </div>
+</div>
+
+<!-- 未接入摄像头时的引导：不显示空白画面，直接告诉用户怎么接 -->
+<div class="card" id="setupCard" hidden>
+  <h3 class="card-title">接入监控摄像头</h3>
+  <div class="note-box">
+    <b>当前未检测到可用的视频源。</b>
+    本页支持两种接入方式 —— 推荐用 <b>RTSP 网络摄像头</b>（海康威视、大华等），
+    画面质量与工地场景更贴合；手边没有设备时，可先用<b>手机推流</b>快速验证。
+  </div>
+
+  <div class="setup-tabs">
+    <button class="seg-btn active" data-tab="rtsp">RTSP 网络摄像头</button>
+    <button class="seg-btn" data-tab="phone">手机推流（HTTP）</button>
+  </div>
+
+  <div class="setup-pane" id="pane-rtsp">
+    <p class="setup-lead">适用于海康威视 / 大华 / 宇视等支持 RTSP 的 IP 摄像头或 NVR。</p>
+    <ol class="setup-steps">
+      <li>确认摄像头与运行本系统的电脑在<b>同一局域网</b>（同网段，能互相 ping 通）。</li>
+      <li>在摄像头管理后台开启 <b>RTSP</b>（海康默认端口 <span class="mono">554</span>）。</li>
+      <li>拼出取流地址，常见格式：
+        <ul>
+          <li><b>海康威视</b>：<span class="mono">rtsp://admin:密码@摄像头IP:554/Streaming/Channels/101</span>
+              <br><span class="setup-tip">101 = 主码流（高清），102 = 子码流（流畅，检测够用）</span></li>
+          <li><b>大华</b>：<span class="mono">rtsp://admin:密码@摄像头IP:554/cam/realmonitor?channel=1&amp;subtype=0</span></li>
+        </ul>
+      </li>
+      <li>启动服务时指定地址（Windows 下用 <span class="mono">run_web.bat</span> 可直接改）：
+        <pre class="setup-code">set CAMERA_SOURCE=rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102
+scripts\run_web.bat</pre>
+      </li>
+    </ol>
+    <div class="field-hint">
+      不确定地址对不对？先用探测脚本验证，<b>能取到画面再启动服务</b>：
+      <pre class="setup-code">python scripts\list_cameras.py --url "rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102" --save</pre>
+    </div>
+  </div>
+
+  <div class="setup-pane" id="pane-phone" hidden>
+    <p class="setup-lead">适用于手边没有 IP 摄像头时，用手机 App 快速搭一个视频源。</p>
+    <ol class="setup-steps">
+      <li>手机装 <b>IP Webcam</b>（Android，免费）或同类 App。</li>
+      <li>打开 App 点「启动服务器」，记下显示的地址（形如
+        <span class="mono">http://手机IP:8080</span>）。</li>
+      <li>取流地址在其后加 <span class="mono">/video</span>：
+        <pre class="setup-code">set CAMERA_SOURCE=http://192.168.1.100:8080/video
+scripts\run_web.bat</pre>
+      </li>
+      <li>先用浏览器直接打开该地址，<b>能看到画面</b>说明地址正确。</li>
+    </ol>
+    <div class="field-hint">
+      💡 也可以用本系统的「<b>手机检测</b>」页 —— 手机浏览器直接开摄像头，
+      逐帧发给电脑推理，<b>不用装任何 App</b>，更适合现场随手测。
+    </div>
+  </div>
+
+  <div class="field-hint">
+    <b>排查提示</b>：改了地址后<b>必须重启服务</b>才生效；若地址不可达，
+    抓帧线程会每 5 秒自动重试并在画面上显示原因。
   </div>
 </div>
 {% endblock %}
@@ -44,6 +105,8 @@
 const CN = {helmet:'安全帽', head:'未戴安全帽', mask:'口罩', face:'未戴口罩'};
 const feed = document.getElementById('feed');
 const camOff = document.getElementById('camOff');
+const setupCard = document.getElementById('setupCard');
+let feedStarted = false;
 
 feed.addEventListener('load', () => { feed.hidden = false; camOff.style.display = 'none'; });
 feed.addEventListener('error', () => {
@@ -66,16 +129,48 @@ document.getElementById('btnSnap').addEventListener('click', async () => {
   else toast(d.error || '抓拍失败', 'error');
 });
 
+/* 接入引导的标签切换 */
+document.querySelectorAll('.setup-tabs .seg-btn').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.setup-tabs .seg-btn').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  document.getElementById('pane-rtsp').hidden = b.dataset.tab !== 'rtsp';
+  document.getElementById('pane-phone').hidden = b.dataset.tab !== 'phone';
+}));
+
+/* 轮询状态。连续拿不到画面时，显示接入引导（而不是让用户对着黑屏猜）。 */
+let noSignal = 0;
+
 setInterval(async () => {
   try {
     const s = await (await fetch('/api/camera/state')).json();
-    document.getElementById('stCam').textContent = s.ok ? '正常' : '未检测到';
+
+    const src = s.source || {};
+    document.getElementById('stSource').textContent =
+      src.kind === 'stream' ? src.value : (src.label || '-');
+
+    document.getElementById('stCam').textContent = s.ok ? '正常' : '未连接';
     document.getElementById('stCam').className = s.ok ? 'txt-green' : 'txt-red';
     document.getElementById('stFps').textContent = s.fps ? s.fps + ' fps' : '-';
     const c = s.counts || {};
     const txt = Object.keys(c).filter(k => c[k] > 0).map(k => CN[k] + '×' + c[k]).join('，');
     document.getElementById('stCounts').textContent = txt || '-';
-  } catch (e) {}
+
+    // 连续 3 次（约 6 秒）取不到画面，且从未成功加载过流 → 认为需要接入引导
+    if (!s.ok) {
+      noSignal++;
+      if (noSignal >= 3 && !feedStarted) setupCard.hidden = false;
+    } else {
+      noSignal = 0;
+      setupCard.hidden = true;
+    }
+  } catch (e) {
+    noSignal++;
+    if (noSignal >= 3 && !feedStarted) setupCard.hidden = false;
+  }
 }, 2000);
+
+/* 记录画面是否曾经成功过：成功过说明配置没问题，只是临时抖动，
+   不需要再提示「去接摄像头」。 */
+feed.addEventListener('load', () => { feedStarted = true; setupCard.hidden = true; });
 </script>
 {% endblock %}

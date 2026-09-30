@@ -550,6 +550,54 @@ def _quiet_tls_handshake_noise(server):
     server.error_log = _filtered
 
 
+def _harden_windows_tls(ssl_adapter):
+    """让 HTTPS 也能在 Windows 浏览器（schannel）下稳定工作。
+
+    ⚠️ 这是「手机能开、电脑打不开」的真凶。
+
+    现象：同一份服务，手机浏览器一切正常，电脑（Edge/Chrome/curl）时好时坏 ——
+    实测 8 次请求成功 4 次、失败 4 次，正好一半。
+
+    根因：cheroot 的 BuiltinSSLAdapter 用
+    ``ssl.create_default_context(purpose=CLIENT_AUTH)`` 建上下文，它**默认
+    启用两种 TLS 后置消息**：会话票据（session ticket）与后置重新协商
+    （renegotiation，表现为 curl 的
+    ``schannel: remote party requests renegotiation``）。
+
+    Python/OpenSSL 这些实现会照常处理；但 **Windows 的 schannel
+    （Edge、Chrome、curl for Windows 都走它）会把握手后突发的
+    renegotiation 视为异常并直接重置连接** —— 于是电脑端有一半请求莫名失败。
+
+    修复：换掉上下文，显式关掉这两项。
+
+    为什么禁用票据是安全的：本项目是单机自用服务，没有大量短连接需要
+    会话恢复，禁掉只影响性能微优化，换来的是 Windows 端稳定可访问。
+    """
+    import ssl as _ssl
+
+    try:
+        cert = ssl_adapter.certificate
+        key = ssl_adapter.private_key
+
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        # 关掉会话票据：TLS1.3 下票据是「握手后」异步发送的，
+        # 在 Windows 上会被当成不完整的握手。
+        ctx.options |= _ssl.OP_NO_TICKET
+        # 关掉后置重新协商：schannel 对此零容忍，会直接重置连接。
+        if hasattr(_ssl, "OP_NO_RENEGOTIATION"):
+            ctx.options |= _ssl.OP_NO_RENEGOTIATION
+
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        ssl_adapter.context = ctx
+        print("  TLS 加固: 已禁用会话票据与后置重新协商（兼容 Windows 浏览器）")
+    except Exception as e:  # noqa: BLE001
+        # 加固失败不该导致服务起不来 —— 退回 cheroot 的默认上下文，
+        # 手机端仍可用，只是电脑端可能偶发失败。
+        print(f"  ⚠️  TLS 加固失败（不影响启动）：{e}")
+
+
 def _run_prod_server(use_ssl, ssl_cert, ssl_key):
     """cheroot 生产级 WSGI 服务器（默认启动方式）。
 
@@ -583,6 +631,7 @@ def _run_prod_server(use_ssl, ssl_cert, ssl_key):
         from cheroot.ssl.builtin import BuiltinSSLAdapter
 
         server.ssl_adapter = BuiltinSSLAdapter(ssl_cert, ssl_key)
+        _harden_windows_tls(server.ssl_adapter)
 
     if use_ssl:
         print("  正在启动 HTTPS 服务（cheroot + SSL）…")

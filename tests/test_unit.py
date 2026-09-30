@@ -432,6 +432,42 @@ class TestCameraSource(unittest.TestCase):
         self.assertIn("0", shown)
 
 
+class TestSourceMasking(unittest.TestCase):
+    """camera._mask_source：回传给前端的取流地址必须抹掉密码。
+
+    /api/camera/state 会把当前视频源显示在页面上，而 RTSP 地址里
+    通常带摄像头账号密码（rtsp://admin:密码@ip:554/...）。
+    若原样返回，登录密码就暴露在浏览器、接口响应和截图里。
+    """
+
+    def setUp(self):
+        import camera
+
+        self.m = camera._mask_source
+
+    def test_password_is_masked(self):
+        out = self.m("rtsp://admin:Secret123@192.168.1.64:554/Streaming/Channels/102")
+        self.assertNotIn("Secret123", out, "密码泄漏！")
+        self.assertIn("***", out)
+        self.assertIn("admin", out, "用户名应保留，便于辨认账号")
+        self.assertIn("192.168.1.64", out, "主机地址应保留，便于确认设备")
+
+    def test_no_password_left_untouched(self):
+        """本来就没密码的地址不该被改动（包括不该凭空加上 ***@）。"""
+        url = "http://192.168.1.100:8080/video"
+        self.assertEqual(self.m(url), url)
+
+    def test_url_encoded_password_masked(self):
+        """密码里含 URL 编码字符（如 %40 代表 @）也要打掉。"""
+        out = self.m("rtsp://user:p%40ss@10.0.0.5:554/h264")
+        self.assertNotIn("p%40ss", out)
+        self.assertIn("***", out)
+
+    def test_empty_and_none_safe(self):
+        self.assertEqual(self.m(""), "")
+        self.assertIsNone(self.m(None))
+
+
 class TestPhoneDecode(unittest.TestCase):
     """手机端接口的图像解码：两种 base64 格式都要兼容
 
@@ -612,6 +648,7 @@ def main():
             TestFontutil,
             TestConfig,
             TestCameraSource,
+            TestSourceMasking,
             TestPhoneDecode,
             TestInferLock,
             TestDetectionPayload,

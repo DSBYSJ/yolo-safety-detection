@@ -129,7 +129,7 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `CAMERA_SOURCE` | 空 | 网络视频流地址（RTSP/HTTP/RTMP）。设置后**优先于** `CAMERA_INDEX` |
-| `CAMERA_INDEX` | `0` | 本地摄像头设备索引。接入手机虚拟摄像头时通常要改成 1 或 2 |
+| `CAMERA_INDEX` | `1` | 本地摄像头设备索引。**默认 1 是因为本机索引 0 打不开**，换机器务必先跑 `scripts/list_cameras.py` 枚举 |
 | `CAMERA_FRAME_WIDTH` | `1280` | 本地摄像头采集宽度（对网络流无效，流分辨率由推流端决定） |
 | `CAMERA_FRAME_HEIGHT` | `720` | 本地摄像头采集高度（同上） |
 | `CAMERA_STREAM_TIMEOUT` | `8` | 打开网络流时的超时秒数，失败后自动重试 |
@@ -146,7 +146,92 @@ RTX 4060 上 yolov8s / imgsz 640 / batch 16 的参考速度：安全帽数据集
     # Windows CMD
     set CAMERA_INDEX=1 && python webapp/app.py
 
-## 六之三、使用手机摄像头做实时监测
+## 六之三、接入监控摄像头（海康威视等 RTSP 设备）
+
+**为什么推荐用 RTSP 摄像头而不是电脑自带摄像头**：笔记本内置镜头视角窄、
+画质低、位置固定，拍不到真实的工地/车间场景；而 IP 摄像头能装在需要监控的
+位置，且这本就是安防场景的实际部署方式。项目**无需改代码**即可接入 ——
+`camera.py` 的 `resolve_source()` 已支持 RTSP/HTTP/RTMP，只要给出流地址即可。
+
+### ⚠️ 先确认设备索引（不然会误以为「检测不到摄像头」）
+
+程序默认 `CAMERA_INDEX=1`，但**不同机器的可用索引不一样**。
+遇到「未检测到摄像头」时，**先枚举，别猜**：
+
+```bash
+python scripts/list_cameras.py           # 扫描 0-5 号设备
+python scripts/list_cameras.py --max 8   # 扫更多
+python scripts/list_cameras.py --save    # 存首帧图，确认打开的是哪个镜头
+```
+
+输出示例：
+
+```
+[索引 0]  不可用                ← 打不开（MSMF: can't grab frame）
+[索引 1]  可用  640x480        ← 真实摄像头在这里
+```
+
+拿到可用索引后，改 `config.CAMERA_INDEX` 默认值，**并在 `run_web.bat` 里
+也显式 `set CAMERA_INDEX=<n>`**（环境变量优先于源码默认值，双保险）。
+
+### 方式一：RTSP 网络摄像头（海康威视 / 大华 / 宇视等）
+
+1. 确认摄像头与运行本系统的电脑在**同一局域网**；
+2. 在摄像头后台开启 RTSP（海康默认端口 `554`）；
+3. 拼出取流地址：
+
+| 品牌 | 地址格式 |
+| --- | --- |
+| 海康威视 | `rtsp://admin:密码@摄像头IP:554/Streaming/Channels/101` |
+| | `101` = 主码流（高清）；`102` = 子码流（更流畅，检测够用） |
+| 大华 | `rtsp://admin:密码@摄像头IP:554/cam/realmonitor?channel=1&subtype=0` |
+
+4. 启动服务时指定：
+
+```bash
+# Windows CMD
+set CAMERA_SOURCE=rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102
+scripts\run_web.bat
+
+# Git Bash / Linux
+CAMERA_SOURCE="rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102" \
+  python webapp/app.py
+```
+
+**先验证地址再启动服务**（能取到画面再往下走）：
+
+```bash
+python scripts/list_cameras.py --url "rtsp://admin:密码@192.168.1.64:554/Streaming/Channels/102" --save
+```
+
+### 方式二：手机推流（HTTP，无需 IP 摄像头）
+
+1. 手机装 **IP Webcam**（Android，免费）；
+2. 打开 App 点「启动服务器」，记下地址（形如 `http://手机IP:8080`）；
+3. 取流地址在其后加 `/video`：
+
+```bash
+set CAMERA_SOURCE=http://192.168.1.100:8080/video
+scripts\run_web.bat
+```
+
+### 页面上的接入引导
+
+未接入摄像头时，「实时监控」页会在 6 秒内自动显示**接入引导面板**
+（含上述两种方式的分步说明与地址格式），不需要对着黑屏排查。
+页面同时会显示**当前视频源**：本地设备显示「设备索引 N」，
+网络流显示脱敏后的地址（**密码以 `***` 代替，不会明文回显**）。
+
+### 常见问题
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 改了 `CAMERA_INDEX`/`CAMERA_SOURCE` 不生效 | 抓帧线程已启动时不会重开设备，**必须重启服务** |
+| 提示未检测到摄像头 | 先跑 `scripts/list_cameras.py` 确认索引，别猜默认值 0 |
+| RTSP 连不上 | 检查同网段、RTSP 是否开启、端口是否正确；先用浏览器/VLC 试地址 |
+| 网络流延迟高 | 属正常。RTSP 比 MJPEG(HTTP) 延迟低；优先 5GHz Wi-Fi 或有线 |
+
+## 六之四、使用手机摄像头做实时监测
 
 手机的摄像头**不能直接被 OpenCV 读取** —— `cv2.VideoCapture` 只认系统里注册的
 视频设备（Windows 走 DirectShow，Linux 走 V4L2），或一个明确给出的流地址。
