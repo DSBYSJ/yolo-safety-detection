@@ -22,6 +22,10 @@ webapp/data.db
 webapp/train_logs/
 webapp/*.log
 
+# 人脸底库登记照 —— 属个人生物特征信息，绝对禁止入库/公开
+webapp/static/faces/
+webapp/static/face_thumbs/
+
 # 预训练权重（体积大，按需自行下载，不入库）
 pretrained/
 yolov8*.pt
