@@ -613,7 +613,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .sm-input { min-width: 160px; }
 
 /* ---------- 人脸底库：注册区 ---------- */
-.face-reg { display: grid; grid-template-columns: 300px 1fr; gap: 22px; align-items: start; }
+.face-reg { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
 
 .face-drop {
   position: relative; border: 1.5px dashed #cbd5e1; border-radius: 12px;
@@ -622,9 +622,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 .face-drop:hover, .face-drop.over { border-color: var(--accent); background: #f2f7ff; }
 .face-drop-inner { display: flex; flex-direction: column; align-items: center; gap: 7px; color: var(--muted); text-align: center; padding: 20px; }
-.face-drop-inner b { font-size: 13.5px; color: var(--ink); font-weight: 500; }
+.face-drop-inner b { font-size: 13.5px; color: var(--ink); font-weight: 500; white-space: nowrap; }
 .face-drop-inner span { font-size: 12px; }
-.face-preview { width: 100%; height: 100%; max-height: 300px; object-fit: contain; display: block; background: #0f172a; }
+/* ⚠️ 必须同时写 [hidden]：.face-preview 的 display:block 会盖掉 hidden 的
+   display:none，导致预览图未选择时仍渲染出一块深色底，看起来像坏图。 */
+.face-preview { width: 100%; height: 100%; max-height: 300px; object-fit: contain; background: #0f172a; }
+.face-preview[hidden], .face-drop-inner[hidden] { display: none; }
 
 .face-form { display: flex; flex-direction: column; gap: 6px; }
 .face-form label { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
