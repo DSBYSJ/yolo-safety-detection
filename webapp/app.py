@@ -313,12 +313,14 @@ def api_phone_detect():
     except (TypeError, ValueError):
         conf = 0.25
 
-    # 逐帧请求必须「宁可丢帧，不可排队」：等锁超过 3 秒说明推理通道被占满
-    # （比如摄像头线程正在跑），直接告诉前端跳过这一帧，避免请求越积越多
-    # 最终把 Flask 的所有工作线程耗尽。
+    # 逐帧请求必须「宁可丢帧，不可排队」：等锁超时说明推理通道被占满
+    # （比如摄像头线程正在跑），直接告诉前端跳过这一帧。
+    # 注意服务端为单线程串行，客户端帧间隔 250ms > 单帧推理 60~80ms，
+    # 正常情况下不会走到这里；一旦频繁触发说明有别的推理在抢，
+    # 超时值取 2 秒即可，不必久等。
     try:
         dets, counts, annotated, tms = detector.infer_image(
-            img, kinds, conf=conf, timeout=3.0
+            img, kinds, conf=conf, timeout=2.0
         )
     except detector.InferBusy:
         return jsonify({"ok": False, "error": "推理繁忙，本帧已跳过", "skip": True}), 503
@@ -496,6 +498,29 @@ def _local_ip() -> str:
         s.close()
 
 
+def _run_dev_server(use_ssl, ssl_cert, ssl_key, threads=1):
+    """Flask 自带开发服务器。
+
+    ⚠️ **threaded=False（单线程）是有意为之**，不是图省事。
+
+    本服务的瓶颈是 GPU 推理 —— 而推理已经由 detector._infer_lock 串行化了，
+    多线程不会带来任何吞吐提升，只会让请求在锁上排队、把线程和内存耗光。
+    实测：threaded=True 时，手机端逐帧 + 摄像头线程并发会把进程内存
+    从 450MB 推到 1.4GB，并出现 CLOSE_WAIT 堆积、最终整站无响应。
+
+    单线程下请求天然串行，配合前端 6 秒 abort + 指数退避，
+    内存与连接数都稳定可控，慢一点但不会崩。
+
+    （若日后要提吞吐，正确方向是换 waitress/cheroot 这类
+      自带固定线程池与 SSL 支持的生产级服务器，而不是开 threaded。）
+    """
+    if use_ssl:
+        app.run(host="0.0.0.0", port=5000, threaded=False, debug=False,
+                ssl_context=(ssl_cert, ssl_key))
+    else:
+        app.run(host="0.0.0.0", port=5000, threaded=False, debug=False)
+
+
 if __name__ == "__main__":
     try:
         import torch
@@ -521,10 +546,7 @@ if __name__ == "__main__":
     else:
         print("  模式: HTTP —— 手机端调摄像头受浏览器限制，")
         print("        需配 HTTPS 或用 chrome://flags 白名单，详见 README「六之四」")
+    print("  并发: 单线程串行（推理已加锁，多线程只会堆积等待）")
     print("=" * 60)
 
-    if use_ssl:
-        app.run(host="0.0.0.0", port=5000, threaded=True, debug=False,
-                ssl_context=(ssl_cert, ssl_key))
-    else:
-        app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)
+    _run_dev_server(use_ssl, ssl_cert, ssl_key)

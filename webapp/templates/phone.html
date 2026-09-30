@@ -44,7 +44,7 @@
     <div class="note-box">
       <ul>
         <li><b>画面完全在本机处理</b>：手机摄像头画面逐帧发送到运行本系统的电脑/服务器推理，不经过第三方；</li>
-        <li>为流畅起见，检测帧率自动限制在约 8 帧/秒，不影响识别效果；</li>
+        <li>为保持画面流畅与稳定，检测帧率约为 <b>4 帧/秒</b>，不影响识别效果；</li>
         <li>点「抓拍存档」才会把当前画面写入检测记录，日常预览不留痕；</li>
         <li>若提示无法启动摄像头，通常是浏览器要求 <b>HTTPS 或 localhost</b> 才允许访问摄像头，详见下方提示。</li>
       </ul>
@@ -136,6 +136,8 @@ function stop() {
   running = false;
   clearTimeout(timer);
   failStreak = 0;
+  // 中断在途的检测请求，避免服务端继续为一个已停止的页面做推理
+  if (inflight) { inflight.abort(); inflight = null; }
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   cam.srcObject = null;
   cam.hidden = true;
@@ -161,9 +163,7 @@ async function loop() {
   if (!busy && cam.readyState >= 2 && cam.videoWidth) {
     busy = true;
     try {
-      // 单帧超时 8 秒：避免服务端半死状态下请求永远挂着，
-      // 让循环能感知异常并自动降速
-      const d = await withTimeout(detectOnce(), 8000);
+      const d = await detectOnce();
       if (d === null) { failStreak++; }
       else {
         failStreak = 0;
@@ -185,15 +185,11 @@ async function loop() {
   if (running) timer = setTimeout(loop, nextDelay());
 }
 
-/** 给 promise 套一个超时，超时返回 null（视为本帧失败） */
-function withTimeout(p, ms) {
-  return Promise.race([
-    p,
-    new Promise(res => setTimeout(() => res(null), ms)),
-  ]);
-}
-
 /** 把当前视频帧压成 JPEG base64 发给服务端推理 */
+// canvas 复用：逐帧新建 canvas 会让内存持续累积，
+// 尤其手机浏览器长时间运行容易触发 OOM。尺寸不变就复用同一个。
+let _fc = null, _fcCtx = null;
+
 function grabFrame(quality) {
   // 长边限制在 960px，兼顾清晰度与上传体积（手机原图动辄数 MB）
   const maxSide = 960;
@@ -202,34 +198,64 @@ function grabFrame(quality) {
     const s = maxSide / Math.max(w, h);
     w = Math.round(w * s); h = Math.round(h * s);
   }
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  c.getContext('2d').drawImage(cam, 0, 0, w, h);
-  return c.toDataURL('image/jpeg', quality || 0.7);
+  if (!_fc) {
+    _fc = document.createElement('canvas');
+    _fcCtx = _fc.getContext('2d');
+  }
+  if (_fc.width !== w || _fc.height !== h) {
+    _fc.width = w; _fc.height = h;
+  }
+  _fcCtx.drawImage(cam, 0, 0, w, h);
+  return _fc.toDataURL('image/jpeg', quality || 0.7);
 }
+
+/* 当前在途请求的取消句柄。必须用它真正中断请求 ——
+   只做 Promise.race 超时是没用的：fetch 仍在后台跑，
+   下一帧又发新请求，服务端收到的请求数会持续翻倍累积，
+   最终把服务端线程池和内存撑爆（曾导致进程涨到 1.4G 后完全无响应）。 */
+let inflight = null;
 
 async function detectOnce() {
   const image = grabFrame(0.7);
-  const r = await fetch('/api/phone/detect', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image, kinds: [kind] })
-  });
-  // 503 = 服务端推理通道忙，静默跳过本帧（丢帧比拖垮服务端好）
-  if (r.status === 503) return null;
-  const d = await r.json();
-  if (!d.ok) { showHint(d.error || '检测失败'); return null; }
-  renderCounts(d);
-  return d;
+  inflight = new AbortController();
+  // 6 秒超时：到点主动 abort，连接真正关闭，服务端能及时回收线程
+  const to = setTimeout(() => { if (inflight) inflight.abort(); }, 6000);
+  try {
+    const r = await fetch('/api/phone/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, kinds: [kind] }),
+      signal: inflight.signal,
+    });
+    // 503 = 服务端推理通道忙，静默跳过本帧（丢帧比拖垮服务端好）
+    if (r.status === 503) return null;
+    const d = await r.json();
+    if (!d.ok) { showHint(d.error || '检测失败'); return null; }
+    renderCounts(d);
+    return d;
+  } catch (e) {
+    // AbortError = 超时主动取消，正常路径，不算异常
+    if (e.name === 'AbortError') return null;
+    throw e;
+  } finally {
+    clearTimeout(to);
+    inflight = null;
+  }
 }
 
 /* 服务端出错时逐步放慢节奏：连续失败会让间隔从 120ms 退到最多 2s，
    避免在服务端卡顿时雪崩式重试。任一次成功立即恢复常速。 */
 let failStreak = 0;
 
+/* 基础帧间隔。服务端为单线程串行（推理已加锁），
+   逐帧请求必须留足处理时间，否则只会堆在队列里等超时。
+   实测单帧推理 60~80ms，取 250ms（≈4fps）留足余量，
+   画面连续可辨，又不会让请求堆积。 */
+const BASE_INTERVAL = 250;
+
 function nextDelay() {
-  if (failStreak === 0) return 120;
-  return Math.min(2000, 120 * Math.pow(2, Math.min(failStreak, 5)));
+  if (failStreak === 0) return BASE_INTERVAL;
+  return Math.min(3000, BASE_INTERVAL * Math.pow(2, Math.min(failStreak, 4)));
 }
 
 function renderCounts(d) {
@@ -292,15 +318,22 @@ btnStop.addEventListener('click', stop);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && running) {
     clearTimeout(timer);
+    // 切后台时中断在途请求，否则它会挂到超时才释放
+    if (inflight) { inflight.abort(); inflight = null; }
   } else if (!document.hidden && running) {
     loop();
   }
+});
+
+/* 关页面/刷新时中断在途请求，别把连接丢给服务端等超时 */
+window.addEventListener('pagehide', () => {
+  if (inflight) { inflight.abort(); inflight = null; }
+  if (stream) stream.getTracks().forEach(t => t.stop());
 });
 
 /* 进入页面时提示 HTTPS 限制，让用户提前知道原因 */
 if (location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(location.hostname)) {
   document.getElementById('httpsTip').hidden = false;
 }
-window.addEventListener('pagehide', () => { if (stream) stream.getTracks().forEach(t => t.stop()); });
 </script>
 {% endblock %}
