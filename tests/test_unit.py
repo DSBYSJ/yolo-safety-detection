@@ -486,6 +486,51 @@ class TestPhoneDecode(unittest.TestCase):
         self.assertIsNotNone(img)
 
 
+class TestInferLock(unittest.TestCase):
+    """推理串行锁：防止多线程并发调用 YOLO 导致 CUDA 上下文死锁。
+
+    背景：手机端逐帧请求与摄像头后台线程会同时触发推理，而 YOLO/PyTorch
+    的模型对象不是线程安全的。曾出现「端口仍在 LISTENING 但所有请求无响应」
+    的整进程冻结，就是并发推理踩踏导致。
+    """
+
+    def setUp(self):
+        # webapp 路径已在模块顶部插入 sys.path
+        import detector
+
+        self.detector = detector
+
+    def test_infer_busy_is_runtime_error(self):
+        """InferBusy 必须是 RuntimeError 子类，便于上层统一按异常处理。"""
+        self.assertTrue(issubclass(self.detector.InferBusy, RuntimeError))
+
+    def test_lock_is_exclusive(self):
+        """锁被占用时，第二个持有者必须拿不到（模拟并发推理互斥）。"""
+        lock = self.detector._infer_lock
+        self.assertTrue(lock.acquire(timeout=0.1))
+        try:
+            # 非阻塞尝试：同一个非可重入锁不应被再次获得
+            self.assertFalse(lock.acquire(timeout=0.1))
+        finally:
+            lock.release()
+        # 释放后应能重新获得
+        self.assertTrue(lock.acquire(timeout=0.1))
+        lock.release()
+
+    def test_timeout_acquire_returns_false_when_held(self):
+        """锁被长期占用时，带 timeout 的 acquire 应返回 False 而不是永久阻塞。
+
+        这是手机端接口「宁可丢帧不可排队」的实现基础：等不到锁就跳过本帧。
+        """
+        lock = self.detector._infer_lock
+        self.assertTrue(lock.acquire(timeout=0.1))
+        try:
+            got = lock.acquire(timeout=0.05)
+            self.assertFalse(got, "锁已被占用时不应再次获得")
+        finally:
+            lock.release()
+
+
 def main():
     argv = sys.argv[:]
     if "-v" in argv:
@@ -505,6 +550,7 @@ def main():
             TestConfig,
             TestCameraSource,
             TestPhoneDecode,
+            TestInferLock,
         )
     )
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)

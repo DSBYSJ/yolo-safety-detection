@@ -313,8 +313,15 @@ def api_phone_detect():
     except (TypeError, ValueError):
         conf = 0.25
 
+    # 逐帧请求必须「宁可丢帧，不可排队」：等锁超过 3 秒说明推理通道被占满
+    # （比如摄像头线程正在跑），直接告诉前端跳过这一帧，避免请求越积越多
+    # 最终把 Flask 的所有工作线程耗尽。
     try:
-        dets, counts, annotated, tms = detector.infer_image(img, kinds, conf=conf)
+        dets, counts, annotated, tms = detector.infer_image(
+            img, kinds, conf=conf, timeout=3.0
+        )
+    except detector.InferBusy:
+        return jsonify({"ok": False, "error": "推理繁忙，本帧已跳过", "skip": True}), 503
     except ModelMissingError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 

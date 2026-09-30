@@ -13,6 +13,7 @@
 import argparse
 import json
 import mimetypes
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -24,6 +25,20 @@ DEFAULT_BASE = "http://127.0.0.1:5000"
 
 OK, FAIL, SKIP = "[PASS]", "[FAIL]", "[SKIP]"
 _results = []
+
+# 统一 opener：HTTPS 用自签证书时会失败，这里显式不校验证书。
+# 本脚本只连本机 127.0.0.1 的调试服务，不做身份校验是安全的。
+_CTX = ssl.create_default_context()
+_CTX.check_hostname = False
+_CTX.verify_mode = ssl.CERT_NONE
+_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPSHandler(context=_CTX)
+)
+
+
+def _open(req, timeout):
+    """兼容 http / https(自签) 的 urlopen。"""
+    return _OPENER.open(req, timeout=timeout)
 
 
 def check(name, cond, detail=""):
@@ -64,18 +79,18 @@ def post_file(base, path, kinds, conf=0.25, field="kinds", endpoint="/api/detect
         base + endpoint, data=body,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open(req, timeout) as r:
         return json.load(r)
 
 
 def get_json(base, path, timeout=60):
-    with urllib.request.urlopen(base + path, timeout=timeout) as r:
+    with _open(urllib.request.Request(base + path), timeout) as r:
         return json.load(r)
 
 
 def http_code(base, path, timeout=20):
     try:
-        with urllib.request.urlopen(base + path, timeout=timeout) as r:
+        with _open(urllib.request.Request(base + path), timeout) as r:
             return r.status
     except urllib.error.HTTPError as e:
         return e.code
@@ -150,7 +165,7 @@ def test_detect_image(base, imgs, conf):
             full = f"{base}/{url}" if url else ""
             code, blob = 0, b""
             if full:
-                with urllib.request.urlopen(full, timeout=30) as r:
+                with _open(urllib.request.Request(full), 30) as r:
                     code, blob = r.status, r.read()
             check(
                 "结果图落盘并可访问",
@@ -180,7 +195,7 @@ def test_phone_api(base, imgs):
             data=_json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=90) as r:
+        with _open(req, 90) as r:
             return _json.loads(r.read())
 
     # 1) 正常推理
@@ -208,7 +223,7 @@ def test_phone_api(base, imgs):
                 data=_json.dumps({"ids": [rid]}).encode(),
                 headers={"Content-Type": "application/json"},
             )
-            urllib.request.urlopen(req, timeout=30).read()
+            _open(req, 30).read()
         # 顺手删掉结果图（delete 接口只清库不清文件）
         url = d.get("image_url", "")
         if url:
