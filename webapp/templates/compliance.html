@@ -266,30 +266,56 @@ function renderRank(tbodyId, rows, keys, heads) {
 }
 
 let chart = null;
+let LAST_DAILY = null;
 function renderChart(daily) {
+  if (daily) LAST_DAILY = daily;
+  if (!LAST_DAILY) return;
   const el = document.getElementById('chartDaily');
   if (!chart) chart = echarts.init(el);
+  // 配色从 CSS 变量取，主题切换后重绘即可换色
+  const cs = getComputedStyle(document.documentElement);
+  const pv = (n, f) => (cs.getPropertyValue(n) || '').trim() || f;
+  const AX = pv('--chart-axis', '#2c3244'), SP = pv('--chart-split', '#1b1f2b'),
+        LB = pv('--chart-label', '#819aab'), LG = pv('--chart-legend', '#a8bccd'),
+        OK = pv('--chart-ok', '#34d399'), WARN = pv('--chart-warn', '#fbbf24'),
+        SEL = pv('--sel-bg', 'rgba(26,172,192,.16)');
+  // 面积色用主色淡档：直接对状态色加透明度在不同底色上观感不一致
+  const areaOf = hex => {
+    const h = hex.replace('#', '');
+    const n = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},.14)`;
+  };
   chart.setOption({
+    color: [OK, WARN],
     tooltip: { trigger: 'axis' },
-    legend: { data: ['已注册', '未注册'], right: 10, top: 0 },
+    legend: { data: ['已注册', '未注册'], right: 10, top: 0, textStyle: { color: LG } },
     grid: { left: 40, right: 20, top: 40, bottom: 30 },
-    xAxis: { type: 'category', data: daily.map(d => d.date), boundaryGap: false },
-    yAxis: { type: 'value', minInterval: 1 },
+    xAxis: {
+      type: 'category', data: LAST_DAILY.map(d => d.date), boundaryGap: false,
+      axisLine: { lineStyle: { color: AX } }, axisLabel: { color: LB }
+    },
+    yAxis: {
+      type: 'value', minInterval: 1,
+      axisLine: { lineStyle: { color: AX } }, axisLabel: { color: LB },
+      splitLine: { lineStyle: { color: SP } }
+    },
     series: [
       {
         name: '已注册', type: 'line', smooth: true,
-        data: daily.map(d => d.registered),
-        itemStyle: { color: '#1d9e75' }, areaStyle: { color: 'rgba(29,158,117,.12)' }
+        data: LAST_DAILY.map(d => d.registered),
+        itemStyle: { color: OK }, areaStyle: { color: areaOf(OK) }
       },
       {
         name: '未注册', type: 'line', smooth: true,
-        data: daily.map(d => d.temp),
-        itemStyle: { color: '#ba7517' }, areaStyle: { color: 'rgba(186,117,23,.12)' }
+        data: LAST_DAILY.map(d => d.temp),
+        itemStyle: { color: WARN }, areaStyle: { color: areaOf(WARN) }
       }
     ]
-  });
+  }, true);
   window.addEventListener('resize', () => chart && chart.resize());
 }
+window.addEventListener('themechange', () => renderChart());
 
 async function loadSeen() {
   const params = new URLSearchParams({

@@ -26,7 +26,7 @@
     <thead>
       <tr>
         <th class="w36"><input type="checkbox" id="chkAll"></th>
-        <th>ID</th><th>时间</th><th>来源</th><th>检测类型</th>
+        <th>ID</th><th class="nowrap">时间</th><th>来源</th><th>检测类型</th>
         <th>目标数</th><th>合规</th><th>违规</th><th>平均置信度</th><th>结果</th><th>操作</th>
       </tr>
     </thead>
@@ -66,7 +66,7 @@ async function load() {
     return `<tr>
       <td class="w36"><input type="checkbox" class="row-chk" value="${r.id}"></td>
       <td>#${r.id}</td>
-      <td>${r.created_at}</td>
+      <td class="nowrap">${r.created_at}</td>
       <td>${SRC[r.source_type] || r.source_type}</td>
       <td><span class="badge info">${r.kinds || '-'}</span></td>
       <td>${r.num_objects}</td>

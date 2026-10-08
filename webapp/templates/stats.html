@@ -31,60 +31,88 @@
 
 {% block scripts %}
 <script>
-const ACCENT = '#2563eb', OK = '#16a34a', BAD = '#dc2626', CYAN = '#0891b2', GRAY = '#94a3b8';
-const axisStyle = {axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}, splitLine:{lineStyle:{color:'#eef2f7'}}};
+/* 图表配色统一从 CSS 变量取「快照」：
+   ECharts 只认具体色值、不认 var()，所以这里先读出来再喂进去。
+   好处是配色只在 style.css 维护一份，两套主题各改各的；
+   收到 themechange 事件时重新读一遍并 setOption，即可整页换色。 */
+function themePalette() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name, fallback) => (cs.getPropertyValue(name) || '').trim() || fallback;
+  return {
+    accent: v('--chart-accent', '#1aacc0'),
+    ok:     v('--chart-ok', '#34d399'),
+    bad:    v('--chart-bad', '#f87171'),
+    warn:   v('--chart-warn', '#fbbf24'),
+    cyan:   v('--chart-cyan', '#67e8f9'),
+    gray:   v('--chart-gray', '#64718a'),
+    violet: v('--chart-violet', '#a78bfa'),
+    axis:   v('--chart-axis', '#2c3244'),
+    split:  v('--chart-split', '#1b1f2b'),
+    label:  v('--chart-label', '#819aab'),
+    legend: v('--chart-legend', '#a8bccd'),
+    area:   v('--sel-bg', 'rgba(26,172,192,.16)'),
+    bar:    v('--accent-soft', '#0a3b45')
+  };
+}
 
-(async () => {
-  const d = await (await fetch('/api/stats')).json();
-  document.getElementById('sTotal').textContent = d.summary.total_records;
-  document.getElementById('sObjects').textContent = d.summary.total_objects;
-  document.getElementById('sViol').textContent = d.summary.violations;
-  document.getElementById('sToday').textContent = d.summary.today_records;
+let CHARTS = [];
+let STATS_DATA = null;
+
+function renderCharts() {
+  if (!STATS_DATA) return;
+  const d = STATS_DATA;
+  const P = themePalette();
+  const ACCENT = P.accent, OK = P.ok, BAD = P.bad, CYAN = P.cyan;
+  const axisStyle = {axisLine:{lineStyle:{color:P.axis}}, axisLabel:{color:P.label}, splitLine:{lineStyle:{color:P.split}}};
+  const LEGEND = {color: P.legend};
 
   // 趋势
   const daily = echarts.init(document.getElementById('chDaily'));
   daily.setOption({
+    color: [ACCENT, OK, BAD],
     tooltip: {trigger: 'axis'},
-    legend: {data: ['检测记录数', '检出目标数', '违规目标数'], textStyle: {color: '#475569'}},
+    legend: {data: ['检测记录数', '检出目标数', '违规目标数'], textStyle: LEGEND},
     grid: {left: 48, right: 20, top: 40, bottom: 30},
     xAxis: {type: 'category', data: d.daily.map(x => x.date), ...axisStyle},
     yAxis: {type: 'value', ...axisStyle},
     series: [
-      {name: '检测记录数', type: 'line', smooth: true, data: d.daily.map(x => x.records), itemStyle: {color: ACCENT}, areaStyle: {color: 'rgba(37,99,235,.08)'}},
+      {name: '检测记录数', type: 'line', smooth: true, data: d.daily.map(x => x.records), itemStyle: {color: ACCENT}, areaStyle: {color: P.area}},
       {name: '检出目标数', type: 'line', smooth: true, data: d.daily.map(x => x.objects), itemStyle: {color: OK}},
       {name: '违规目标数', type: 'line', smooth: true, data: d.daily.map(x => x.violations), itemStyle: {color: BAD}}
     ]
-  });
+  }, true);
 
   // 类别分布
   const cls = echarts.init(document.getElementById('chClasses'));
   const clsData = Object.entries(d.classes).filter(([k, v]) => v > 0)
     .map(([k, v]) => ({name: k, value: v}));
   cls.setOption({
+    // 调色板必须放在 option 顶层：放进 series 里 ECharts 不识别，
+    // 会静默回退到默认配色（蓝/红），图例与扇区都会串色。
+    color: [OK, BAD, CYAN, P.warn],
     tooltip: {trigger: 'item'},
-    legend: {bottom: 0, textStyle: {color: '#475569'}},
+    legend: {bottom: 0, textStyle: LEGEND},
     series: [{
       type: 'pie', radius: ['42%', '68%'], center: ['50%', '44%'],
-      label: {color: '#475569'},
-      data: clsData.length ? clsData : [{name: '暂无数据', value: 0}],
-      color: [OK, BAD, CYAN, '#d97706']
+      label: {color: P.label},
+      data: clsData.length ? clsData : [{name: '暂无数据', value: 0}]
     }]
-  });
+  }, true);
 
   // 来源占比
   const src = echarts.init(document.getElementById('chSources'));
   const srcData = Object.entries(d.sources).filter(([k, v]) => v > 0)
     .map(([k, v]) => ({name: k, value: v}));
   src.setOption({
+    color: [ACCENT, CYAN, P.violet],
     tooltip: {trigger: 'item'},
-    legend: {bottom: 0, textStyle: {color: '#475569'}},
+    legend: {bottom: 0, textStyle: LEGEND},
     series: [{
       type: 'pie', radius: '62%', center: ['50%', '44%'],
-      label: {color: '#475569', formatter: '{b}: {c}'},
-      data: srcData.length ? srcData : [{name: '暂无数据', value: 0}],
-      color: [ACCENT, CYAN, '#7c3aed']
+      label: {color: P.label, formatter: '{b}: {c}'},
+      data: srcData.length ? srcData : [{name: '暂无数据', value: 0}]
     }]
-  });
+  }, true);
 
   // 置信度分布
   const conf = echarts.init(document.getElementById('chConf'));
@@ -94,9 +122,23 @@ const axisStyle = {axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64
     xAxis: {type: 'category', data: d.conf.map(x => x.label), ...axisStyle},
     yAxis: {type: 'value', ...axisStyle},
     series: [{type: 'bar', barWidth: '46%', data: d.conf.map(x => x.count), itemStyle: {color: ACCENT, borderRadius: [6, 6, 0, 0]}}]
-  });
+  }, true);
 
-  window.addEventListener('resize', () => [daily, cls, src, conf].forEach(c => c.resize()));
+  CHARTS = [daily, cls, src, conf];
+  window.addEventListener('resize', () => CHARTS.forEach(c => c.resize()));
+}
+
+(async () => {
+  const d = await (await fetch('/api/stats')).json();
+  STATS_DATA = d;
+  document.getElementById('sTotal').textContent = d.summary.total_records;
+  document.getElementById('sObjects').textContent = d.summary.total_objects;
+  document.getElementById('sViol').textContent = d.summary.violations;
+  document.getElementById('sToday').textContent = d.summary.today_records;
+  renderCharts();
 })();
+
+/* 切换主题时用同一份数据重绘，不必重新请求接口 */
+window.addEventListener('themechange', () => renderCharts());
 </script>
 {% endblock %}

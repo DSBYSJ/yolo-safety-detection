@@ -2,10 +2,43 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0e1726">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<!-- 状态栏配色随主题走。media 两档只在「未手动选主题」时生效，
+     手动切换后由 JS 改写 content（见下方 themeInit）。 -->
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f6fa">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0c0f16">
+<meta name="color-scheme" content="dark light">
 <meta name="format-detection" content="telephone=no">
 <title>{% block title %}安全帽/口罩佩戴检测系统{% endblock %}</title>
+<!--
+  防闪白（FOUC）：主题必须在首次绘制之前定好，否则浅色用户会先看到
+  一帧深色再跳到浅色。这段脚本放在 <head> 里同步执行，
+  早于 <body> 渲染与 CSS 之后的任何布局。
+  取值优先级：本地手动选择 > 系统偏好。
+-->
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('theme');
+    var theme = (saved === 'light' || saved === 'dark')
+      ? saved
+      : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    document.documentElement.dataset.theme = theme;
+    // 让浏览器 UI（地址栏/状态栏）也立刻跟上，避免加载瞬间的白杠
+    var meta = document.querySelector('meta[name="theme-color"]:not([media])');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'theme-color');
+      document.head.appendChild(meta);
+    }
+    if (saved) meta.setAttribute('content', theme === 'light' ? '#f4f6fa' : '#0c0f16');
+  } catch (e) {
+    // localStorage 被禁用（隐私模式）时静默降级为「跟随系统」
+    var t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    document.documentElement.dataset.theme = t;
+  }
+})();
+</script>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
 {% block head %}{% endblock %}
@@ -22,28 +55,71 @@
       </button>
     </div>
     <nav>
-      <a href="{{ url_for('index') }}" class="{{ 'active' if page == 'home' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>系统概览</a>
-      <a href="{{ url_for('detect_page') }}" class="{{ 'active' if page == 'detect' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/><path d="M11 8v6M8 11h6"/></svg>在线检测</a>
-      <a href="{{ url_for('camera_page') }}" class="{{ 'active' if page == 'camera' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="13" height="12" rx="2"/><path d="m15.5 10.5 6-3.5v10l-6-3.5"/></svg>实时监控</a>
-      <a href="{{ url_for('phone_page') }}" class="{{ 'active' if page == 'phone' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10.5 18.5h3"/><circle cx="12" cy="8.5" r="2.2"/></svg>手机检测</a>
-      <a href="{{ url_for('faces_page') }}" class="{{ 'active' if page == 'faces' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="3.6"/><path d="M5 20a7 7 0 0 1 14 0"/><path d="M3 5h2M19 5h2M3 19h2M19 19h2"/></svg>人脸底库</a>
-      <a href="{{ url_for('compliance_page') }}" class="{{ 'active' if page == 'compliance' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11.5 11 13.5 15.5 9"/><path d="M12 3l7.5 3v6c0 4.5-3.2 7.6-7.5 9-4.3-1.4-7.5-4.5-7.5-9V6z"/></svg>合规统计</a>
-      <a href="{{ url_for('attendance_page') }}" class="{{ 'active' if page == 'attendance' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 3v3M16 3v3"/><path d="m8.5 14 2.2 2.2L15.5 12"/></svg>人脸打卡</a>
-      <a href="{{ url_for('records_page') }}" class="{{ 'active' if page == 'records' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>检测记录</a>
-      <a href="{{ url_for('stats_page') }}" class="{{ 'active' if page == 'stats' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>统计报表</a>
-      <a href="{{ url_for('train_page') }}" class="{{ 'active' if page == 'train' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/><circle cx="12" cy="12" r="2.5"/></svg>模型训练</a>
-      <a href="{{ url_for('eval_page') }}" class="{{ 'active' if page == 'eval' }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.4 2.4L16 9.5"/></svg>模型评估</a>
+      {#- 侧边导航按「任务域」分四组，组内是原有一级入口。
+          分组用原生 <details>/<summary>：键盘可达、无障碍语义免费拿到，
+          不依赖 JS 就能展开收起。仅在 <html> 挂 data-nav 时用 JS 接管
+          持久化与折线动画，JS 挂掉时退化成「一直展开」的静态菜单。 -#}
+      {%- set NAV_GROUPS = [
+        {
+          'id': 'ops', 'name': '检测作业', 'icon': 'target',
+          'items': [
+            {'ep': 'detect_page', 'page': 'detect', 'label': '在线检测', 'icon': 'scan'},
+            {'ep': 'camera_page', 'page': 'camera', 'label': '实时监控', 'icon': 'video'},
+            {'ep': 'phone_page',  'page': 'phone',  'label': '手机检测', 'icon': 'phone'},
+          ],
+        },
+        {
+          'id': 'people', 'name': '人员与考勤', 'icon': 'users',
+          'items': [
+            {'ep': 'faces_page',      'page': 'faces',      'label': '人脸底库', 'icon': 'users'},
+            {'ep': 'attendance_page', 'page': 'attendance', 'label': '人脸打卡', 'icon': 'calendar-check'},
+          ],
+        },
+        {
+          'id': 'data', 'name': '数据与报表', 'icon': 'chart',
+          'items': [
+            {'ep': 'records_page',    'page': 'records',    'label': '检测记录', 'icon': 'table'},
+            {'ep': 'stats_page',      'page': 'stats',      'label': '统计报表', 'icon': 'chart'},
+            {'ep': 'compliance_page', 'page': 'compliance', 'label': '合规统计', 'icon': 'shield-check'},
+          ],
+        },
+        {
+          'id': 'model', 'name': '模型管理', 'icon': 'chip',
+          'items': [
+            {'ep': 'train_page', 'page': 'train', 'label': '模型训练', 'icon': 'chip'},
+            {'ep': 'eval_page',  'page': 'eval',  'label': '模型评估', 'icon': 'check-circle'},
+          ],
+        },
+      ] -%}
+
+      {#- 图标集中一处定义，保证所有条目尺寸 / 线宽 / 圆角统一 -#}
+      {%- set STROKE = 'fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"' -%}
+
+      {#- 「系统概览」不归组：它是全局入口，跨所有分组，塞进任何一组都名不副实 -#}
+      <a class="nav-item{{ ' active' if page == 'home' }}" href="{{ url_for('index') }}">
+        <svg viewBox="0 0 24 24" {{ STROKE|safe }}><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        <span>系统概览</span>
+      </a>
+
+      {% for g in NAV_GROUPS %}
+        {%- set g_active = g['items'] | selectattr('page', 'equalto', page) | list | length > 0 -%}
+      <details class="nav-group" data-group="{{ g.id }}"{{ ' data-active="true" open' if g_active }}>
+        <summary>
+          <svg class="g-ico" viewBox="0 0 24 24" {{ STROKE|safe }}>{% include 'nav_icons/' + g.icon + '.svg' %}</svg>
+          <span class="g-name">{{ g.name }}</span>
+          <svg class="g-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
+        </summary>
+        <div class="nav-sub">
+          {% for it in g['items'] %}
+          <a class="nav-item nav-sub-item{{ ' active' if page == it.page }}" href="{{ url_for(it.ep) }}"
+             {% if page == it.page %}aria-current="page"{% endif %}>
+            <svg viewBox="0 0 24 24" {{ STROKE|safe }}>{% include 'nav_icons/' + it.icon + '.svg' %}</svg>
+            <span>{{ it.label }}</span>
+          </a>
+          {% endfor %}
+        </div>
+      </details>
+      {% endfor %}
     </nav>
     <div class="side-foot">Flask · OpenCV · SQLite</div>
   </aside>
@@ -64,6 +140,15 @@
           </span>
         </button>
         <div id="envChip" class="env-chip"><span class="dot"></span>环境检测中…</div>
+        <!-- 主题切换放在顶栏最右侧：它是「全局显示偏好」，
+             与左侧的导航、中间的业务徽标都不是一类东西，靠边放才不打断阅读顺序。
+             一个按钮循环「浅色 / 深色」两态，不用三态（跟随系统）是为了让交互可预期。 -->
+        <span class="topbar-sep" aria-hidden="true"></span>
+        <button type="button" class="theme-toggle" id="themeToggle"
+                aria-label="切换深浅色主题" title="切换深浅色主题">
+          <svg class="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M21.5 12h-2.2M4.7 12H2.5M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6M18.7 18.7l-1.6-1.6M6.9 6.9 5.3 5.3"/></svg>
+          <svg class="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.3A8.5 8.5 0 0 1 9.7 3.5a8.5 8.5 0 1 0 10.8 10.8z"/></svg>
+        </button>
       </div>
     </header>
     <section class="content">
@@ -79,6 +164,98 @@
 
 <div class="modal" id="modal"><div class="modal-box" id="modalBox"></div></div>
 <script>
+/* ---------- 侧边导航分组：展开收起 + 状态持久化 ----------
+   用原生 <details> 做骨架（无 JS 时天然可用，退化成「一直展开」的静态菜单），
+   这里接管三件事：
+   1) 高度过渡动画（<details> 的原生 toggle 是瞬时的，`height:auto` 又不可过渡）；
+   2) 记住用户手工收起的分组，重载后还原；
+   3) 当前页所在分组强制展开——否则刷新后看不到自己在哪。
+
+   存储键存的是「被手动收起的组 id 列表」而非「展开的组」：
+   以后新增分组默认就是展开的，不需要写数据迁移。 */
+(function () {
+  const root = document.documentElement;
+  const groups = Array.from(document.querySelectorAll('.nav-group'));
+  if (!groups.length) return;
+
+  const KEY = 'nav-collapsed';
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let collapsed;
+  try {
+    collapsed = new Set(JSON.parse(localStorage.getItem(KEY) || '[]'));
+  } catch (e) { collapsed = new Set(); }
+  // 历史脏数据防御：只保留当前真实存在的组 id
+  const ids = groups.map(g => g.dataset.group);
+  collapsed = new Set(Array.from(collapsed).filter(id => ids.indexOf(id) >= 0));
+
+  const save = () => {
+    try { localStorage.setItem(KEY, JSON.stringify(Array.from(collapsed))); } catch (e) {}
+  };
+
+  /* 把某组从 from 高度过渡到 to 高度；结束后清掉内联样式回到 auto，
+     这样以后窗口变窄、文字换行导致内容变高时不会被写死的高度截断。 */
+  function animate(sub, from, to, done) {
+    if (reduce) { done(); return; }
+    sub.style.height = from + 'px';
+    void sub.offsetHeight;          // 强制回流，让起始高度落定
+    sub.style.height = to + 'px';
+    let fired = false;
+    const finish = e => {
+      // 只认 height 的 transitionend；子项 opacity 冒泡上来的一律忽略
+      if (e && (e.target !== sub || e.propertyName !== 'height')) return;
+      if (fired) return;
+      fired = true;
+      sub.removeEventListener('transitionend', finish);
+      sub.style.height = '';
+      done();
+    };
+    sub.addEventListener('transitionend', finish);
+    // 兜底：过渡被打断（用户连点）或浏览器没派发时，靠定时器收尾
+    setTimeout(finish, 400);
+  }
+
+  const openGroup = g => {
+    const sub = g.querySelector('.nav-sub');
+    if (g.open) return;
+    g.open = true;                                  // 先让内容进入渲染流才能量到高度
+    animate(sub, 0, sub.scrollHeight);
+  };
+  const closeGroup = g => {
+    const sub = g.querySelector('.nav-sub');
+    if (!g.open) return;
+    const h = sub.scrollHeight;
+    animate(sub, h, 0, () => { g.open = false; });   // 高度到 0 后才真正收起
+  };
+
+  // 关键顺序：先打 data-nav（过渡规则生效），再写入 open，
+  // 避免首屏把「还原展开」误判成一次用户操作而播一段动画。
+  root.dataset.nav = 'ready';
+
+  groups.forEach(g => {
+    const id = g.dataset.group;
+    // 当前页所在组强制展开，并抹掉历史里「被收起」的记录
+    if (g.hasAttribute('data-active')) { g.open = true; collapsed.delete(id); }
+    else { g.open = !collapsed.has(id); }
+
+    const sum = g.querySelector('summary');
+    sum.addEventListener('click', e => {
+      e.preventDefault();                 // 拦掉原生瞬时 toggle，换成带动画的
+      const wantOpen = !g.open;
+      if (wantOpen) { collapsed.delete(id); openGroup(g); }
+      else { collapsed.add(id); closeGroup(g); }
+      save();
+    });
+    sum.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && g.open) {
+        e.preventDefault();
+        collapsed.add(id); closeGroup(g); save(); sum.focus();
+      }
+    });
+  });
+  save();
+})();
+
 /* ---------- 移动端抽屉导航 ---------- */
 (function () {
   const body = document.body;
@@ -101,6 +278,39 @@
   const mq = window.matchMedia('(min-width: 901px)');
   const onChange = e => { if (e.matches) setOpen(false); };
   mq.addEventListener ? mq.addEventListener('change', onChange) : mq.addListener(onChange);
+})();
+
+/* ---------- 主题切换 ----------
+   两态循环：浅色 ⇄ 深色。写进 localStorage 后就不再跟随系统，
+   这样用户白天手动选的浅色不会在晚上被系统偏好翻回去。
+   若想「跟随系统」，清掉 localStorage 的 theme 键即可。
+   图表重绘由 CSS 变量驱动，这里只需广播一个事件通知它们刷新。 */
+(function () {
+  const root = document.documentElement;
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+
+  const meta = document.querySelector('meta[name="theme-color"]');
+  const STATUS_BAR = { light: '#f4f6fa', dark: '#0c0f16' };
+
+  function apply(theme, persist) {
+    root.dataset.theme = theme;
+    if (persist) {
+      try { localStorage.setItem('theme', theme); } catch (e) {}
+      // 手动选过之后，让 theme-color 脱离 media 查询固定下来
+      if (meta) meta.setAttribute('content', STATUS_BAR[theme]);
+    }
+    btn.setAttribute('aria-pressed', theme === 'light' ? 'true' : 'false');
+    btn.title = theme === 'light' ? '切换到深色主题' : '切换到浅色主题';
+    // 图表拿的是 CSS 变量快照，主题变了要重算
+    window.dispatchEvent(new CustomEvent('themechange', { detail: { theme } }));
+  }
+
+  apply(root.dataset.theme === 'light' ? 'light' : 'dark', false);
+
+  btn.addEventListener('click', () => {
+    apply(root.dataset.theme === 'light' ? 'dark' : 'light', true);
+  });
 })();
 
 function toast(msg, type) {

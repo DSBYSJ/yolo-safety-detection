@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """在线训练/评估管理：后台子进程执行 train/train.py 与 train/val.py，实时读取进度"""
 import csv
+import json
 import os
 import subprocess
 import sys
@@ -50,12 +51,24 @@ def _tail(path: Path, n: int = 40) -> list:
 # ---------------------------------------------------------------- 训练
 def start(kind: str, size: str = "s", epochs: int = 80, imgsz: int = 640, batch: int = 16):
     global _train_proc
+    if kind not in config.MODELS:
+        return None, f"未知的模型类型：{kind}"
     with _lock:
         if _train_proc is not None and _train_proc.poll() is None:
             return None, "已有训练任务正在运行，请等待其结束后再启动"
+        # 评估正在跑时让出显卡，避免训练与评估互相抢显存
+        if _eval_proc is not None and _eval_proc.poll() is None:
+            return None, "评估任务正在运行，请等评估结束后再开始训练"
         data = config.PROJECT_ROOT / "datasets" / kind / "data.yaml"
         if not data.exists():
             return None, f"未找到数据集配置：{data}（请先运行数据集构建脚本）"
+        if not isinstance(epochs, int) or epochs <= 0:
+            return None, f"epochs 必须为正整数，收到 {epochs!r}"
+        if not isinstance(imgsz, int) or imgsz <= 0:
+            return None, f"imgsz 必须为正整数，收到 {imgsz!r}"
+        if not isinstance(batch, int) or batch == 0 or batch < -1:
+            return None, f"batch 必须为正整数或 -1，收到 {batch!r}"
+        config.TRAIN_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = config.TRAIN_LOG_DIR / f"{kind}_{size}_{int(time.time())}.log"
         # 优先用项目内已有权重，避免 ultralytics 联网下载（国内常超时/失败）
         local_w = config.PRETRAINED_DIR / f"yolov8{size}.pt"
@@ -73,10 +86,22 @@ def start(kind: str, size: str = "s", epochs: int = 80, imgsz: int = 640, batch:
             "--device", _device(),
         ]
         log_f = open(log_path, "w", encoding="utf-8")
-        _train_proc = subprocess.Popen(
-            cmd, cwd=str(config.PROJECT_ROOT), stdout=log_f, stderr=subprocess.STDOUT,
-            env=_subprocess_env(),
-        )
+        try:
+            _train_proc = subprocess.Popen(
+                cmd, cwd=str(config.PROJECT_ROOT), stdout=log_f, stderr=subprocess.STDOUT,
+                env=_subprocess_env(),
+            )
+        except Exception as e:
+            log_f.close()
+            _train_proc = None
+            return None, f"启动训练进程失败：{e}"
+        else:
+            # 子进程已继承句柄，父进程这端可以关了：原实现从不关闭，
+            # 每启动一次训练就泄漏一个文件描述符
+            try:
+                log_f.close()
+            except Exception:
+                pass
         _train_meta.update(
             {
                 "kind": kind,
@@ -303,18 +328,68 @@ def runs_list() -> list:
 
 
 # ---------------------------------------------------------------- 评估
+def _eval_state(proc, meta: dict) -> dict:
+    """由「进程对象 + 元信息」推导评估任务状态（调用方须已持有 _lock 或已快照）。
+
+    状态语义（前端据此区分提示文案）：
+        idle    从未启动过评估（meta 为空）
+        running 子进程仍在运行
+        done    子进程正常退出（returncode == 0）
+        failed  子进程异常退出（returncode != 0），附 exit_code
+    """
+    if not meta:
+        running, exit_code = False, None
+    else:
+        running = proc is not None and proc.poll() is None
+        exit_code = None if running or proc is None else proc.poll()
+    if running:
+        state = "running"
+    elif not meta:
+        state = "idle"
+    elif exit_code == 0:
+        state = "done"
+    else:
+        state = "failed"
+    return {"running": running, "exit_code": exit_code, "state": state}
+
+
 def eval_start(kind: str, imgsz: int = 640, batch: int = 16):
+    """启动一次验证集评估。返回 (pid, error)；失败时 pid 为 None。
+
+    与训练互斥：同一张显卡上并行跑训练与评估会互相抢占显存，
+    因此只要训练在跑就拒绝启动评估（反之亦然，见 start()）。
+    """
     global _eval_proc
+    if kind not in config.MODELS:
+        return None, f"未知的模型类型：{kind}"
+    if not isinstance(imgsz, int) or imgsz <= 0:
+        return None, f"--imgsz 必须为正整数，收到 {imgsz!r}"
+    if not isinstance(batch, int) or batch == 0 or batch < -1:
+        return None, f"--batch 必须为正整数或 -1，收到 {batch!r}"
+
     with _lock:
+        # 已有评估在跑
         if _eval_proc is not None and _eval_proc.poll() is None:
-            return None, "已有评估任务正在运行"
+            return None, "已有评估任务正在运行，请等待其结束后再启动"
+        # 训练正在跑 —— 让出显卡
+        if _train_proc is not None and _train_proc.poll() is None:
+            return None, "训练任务正在运行，请等训练结束后再评估"
+
         data = config.PROJECT_ROOT / "datasets" / kind / "data.yaml"
         if not data.exists():
-            return None, f"未找到数据集配置：{data}"
+            return None, f"未找到数据集配置：{data}（请先运行数据集构建脚本）"
         try:
             weights = __import__("detector").model_path(kind)
         except Exception as e:
             return None, str(e)
+        # 权重文件必须真实存在，否则子进程会白跑一趟
+        try:
+            if not Path(weights).is_file():
+                return None, f"权重文件不存在：{weights}"
+        except Exception:
+            return None, f"权重路径无效：{weights}"
+
+        config.TRAIN_LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = config.TRAIN_LOG_DIR / f"eval_{kind}_{int(time.time())}.log"
         cmd = [
             sys.executable,
@@ -326,12 +401,36 @@ def eval_start(kind: str, imgsz: int = 640, batch: int = 16):
             "--name", kind,
             "--device", _device(),
         ]
-        log_f = open(log_path, "w", encoding="utf-8")
-        _eval_proc = subprocess.Popen(
-            cmd, cwd=str(config.PROJECT_ROOT), stdout=log_f, stderr=subprocess.STDOUT,
-            env=_subprocess_env(),
-        )
-        _eval_meta.update({"kind": kind, "log": str(log_path), "started": time.time()})
+        try:
+            log_f = open(log_path, "w", encoding="utf-8")
+        except OSError as e:
+            return None, f"无法创建评估日志文件：{log_path}（{e}）"
+        try:
+            _eval_proc = subprocess.Popen(
+                cmd, cwd=str(config.PROJECT_ROOT), stdout=log_f, stderr=subprocess.STDOUT,
+                env=_subprocess_env(),
+            )
+        except Exception as e:
+            log_f.close()
+            _eval_proc = None
+            return None, f"启动评估进程失败：{e}"
+        finally:
+            # 父进程不再需要写端：子进程已继承句柄，关掉可避免文件描述符泄漏
+            # （原实现在每次评估后都泄漏一个 fd，长期运行会耗尽）
+            try:
+                log_f.close()
+            except Exception:
+                pass
+
+        _eval_meta.clear()
+        _eval_meta.update({
+            "kind": kind,
+            "log": str(log_path),
+            "started": time.time(),
+            "imgsz": imgsz,
+            "batch": batch,
+            "weights": str(weights),
+        })
         return _eval_proc.pid, None
 
 
@@ -339,31 +438,99 @@ def eval_status() -> dict:
     with _lock:
         proc = _eval_proc
         meta = dict(_eval_meta)
-    running = proc is not None and proc.poll() is None
+    st = _eval_state(proc, meta)
+    elapsed = None
+    if meta.get("started"):
+        end = time.time() if st["running"] else None
+        if end is None:
+            # 已结束：尽量用日志文件的落盘时间近似结束时刻
+            try:
+                end = Path(meta["log"]).stat().st_mtime
+            except Exception:
+                end = time.time()
+        elapsed = round(end - meta["started"], 1)
     return {
-        "running": running,
+        "running": st["running"],
+        "state": st["state"],
+        "exit_code": st["exit_code"],
         "kind": meta.get("kind"),
+        "elapsed_sec": elapsed,
         "log": _tail(Path(meta["log"])) if meta.get("log") else [],
     }
 
 
-def eval_metrics(kind: str):
-    """读取评估生成的 metrics.json 与可视化图片。"""
-    import json
+# 评估产出的可视化白名单（顺序即前端展示顺序）。
+# 注意：ultralytics 还会生成 val_batchN_labels.jpg（标注对照图），
+# 但对使用者价值低且体积大，此处在白名单外，保持既有行为不变。
+EVAL_IMAGE_NAMES = (
+    "confusion_matrix_normalized.png",
+    "confusion_matrix.png",
+    "BoxPR_curve.png",
+    "BoxF1_curve.png",
+    "BoxP_curve.png",
+    "BoxR_curve.png",
+    "results.png",
+    "val_batch0_pred.jpg",
+    "val_batch1_pred.jpg",
+    "val_batch2_pred.jpg",
+)
 
+
+def eval_metrics(kind: str, strict: bool = False):
+    """读取评估生成的 metrics.json 与可视化图片。
+
+    strict=True 时，若指标文件缺失或损坏则抛 ValueError（供调试/API 需要明确
+    报错的场景）；默认 strict=False 保持原有「读不到就返回 None」的宽松语义，
+    但会把失败原因以 `error` 字段一并返回，不再静默吞掉。
+
+    返回值（对外契约）：
+        metrics : dict | None   —— 与旧版完全一致的指标结构
+        images  : list          —— [{name, url}]，旧版已有
+        error   : str | None    —— 新增，说明 metrics 不可用的原因
+        stale   : bool          —— 新增，图片比指标新（上次评估失败后残留的旧指标）
+    """
     base = config.RUNS_DIR / "val" / kind
     mj = base / "metrics.json"
     data = None
+    error = None
     if mj.exists():
         try:
             data = json.loads(mj.read_text(encoding="utf-8"))
-        except Exception:
-            data = None
+            if not isinstance(data, dict):
+                error = f"metrics.json 顶层不是对象：{type(data).__name__}"
+                data = None
+            elif "per_class" in data and not isinstance(data["per_class"], list):
+                error = "metrics.json 的 per_class 不是列表"
+                data = None
+        except json.JSONDecodeError as e:
+            error = f"metrics.json 解析失败（JSON 非法）：{e}"
+        except OSError as e:
+            error = f"metrics.json 读取失败：{e}"
+    else:
+        error = "尚未生成评估结果"
+
+    if strict and data is None:
+        raise ValueError(error or "评估指标不可用")
+
     images = []
-    for name in ("confusion_matrix_normalized.png", "confusion_matrix.png",
-                 "BoxPR_curve.png", "results.png", "val_batch0_pred.jpg",
-                 "val_batch1_pred.jpg", "val_batch2_pred.jpg"):
+    newest_img = 0.0
+    for name in EVAL_IMAGE_NAMES:
         p = base / name
-        if p.exists():
-            images.append({"name": name, "url": f"/runs/val/{kind}/{name}"})
-    return {"metrics": data, "images": images}
+        try:
+            if not p.exists():
+                continue
+            newest_img = max(newest_img, p.stat().st_mtime)
+        except OSError:
+            continue
+        images.append({"name": name, "url": f"/runs/val/{kind}/{name}"})
+
+    # 一致性检测：若可视化比 metrics.json 新出一截，说明最近一次评估
+    # 在「图已落盘、指标未写出」的中间态失败（本次修复前的常见现象），
+    # 此时页面上看到的是旧指标 + 新图片，需要显式告知而不是让用户误解。
+    stale = False
+    if data is not None and newest_img:
+        try:
+            stale = newest_img - mj.stat().st_mtime > 60
+        except OSError:
+            stale = False
+    return {"metrics": data, "images": images, "error": error, "stale": stale}

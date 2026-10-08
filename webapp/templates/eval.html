@@ -21,6 +21,12 @@
   </div>
   {% set m = data[kind].metrics %}
   {% if m %}
+  {% if data[kind].stale %}
+  <div class="at-note" style="margin:0 0 var(--sp-4);">
+    <strong>注意：</strong>下方图片比指标文件新，说明最近一次评估在写入指标前中断（或曾失败），
+    当前显示的是<b>上一次成功评估</b>的指标。建议重新点击「开始评估」。
+  </div>
+  {% endif %}
   <div class="metric-grid">
     <div class="metric"><span>Precision</span><b>{{ '%.4f'|format(m.precision) }}</b></div>
     <div class="metric"><span>Recall</span><b>{{ '%.4f'|format(m.recall) }}</b></div>
@@ -39,7 +45,10 @@
   </table>
   </div>
   {% else %}
-  <div class="result-empty">暂无评估结果，点击上方「开始评估」生成</div>
+  <div class="result-empty">
+    暂无评估结果，点击上方「开始评估」生成
+    {% if data[kind].error %}<br><span class="mono">{{ data[kind].error }}</span>{% endif %}
+  </div>
   {% endif %}
   {% if data[kind].images %}
   <div class="img-grid">
@@ -54,28 +63,105 @@
 
 {% block scripts %}
 <script>
-const CN = {helmet: '安全帽', head: '未戴安全帽', mask: '口罩', face: '未戴口罩'};
+const CN = {helmet: '安全帽', head: '未戴安全帽', mask: '口罩', face: '未戴口罩',
+            ppe: 'PPE 防护装备'};
+
+let evalTimer = null;      // 全局单例定时器：重复点击「开始评估」不会叠加多个轮询
+let pollFailures = 0;      // 连续请求失败次数，超过阈值就停表并提示
+
+function setState(text, running, cls) {
+  const st = document.getElementById('evalState');
+  st.textContent = text;
+  st.className = 'badge ' + (cls || (running ? 'ok' : ''));
+}
 
 document.getElementById('btnEval').addEventListener('click', async () => {
   const kind = document.getElementById('evalKind').value;
-  const d = await (await fetch('/api/eval/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({kind})})).json();
-  if (d.ok) { toast('评估任务已启动，请稍候'); pollEval(); }
-  else toast(d.error || '启动失败', 'error');
+  const btn = document.getElementById('btnEval');
+  btn.disabled = true;
+  try {
+    const d = await (await fetch('/api/eval/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind})
+    })).json();
+    if (d.ok) {
+      toast('评估任务已启动，请稍候');
+      startPoll();
+    } else {
+      toast(d.error || '启动失败', 'error');
+    }
+  } catch (e) {
+    toast('启动请求失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 });
 
-async function pollEval() {
-  const st = document.getElementById('evalState');
-  const timer = setInterval(async () => {
-    const d = await (await fetch('/api/eval/status')).json();
-    st.textContent = d.running ? ('评估中：' + (CN[d.kind] || d.kind)) : '空闲';
-    st.className = 'badge ' + (d.running ? 'ok' : '');
-    if (!d.running) {
-      clearInterval(timer);
-      if (st.dataset.wasRunning === '1') { toast('评估完成，页面即将刷新'); setTimeout(() => location.reload(), 1200); }
-      st.dataset.wasRunning = '0';
-    } else st.dataset.wasRunning = '1';
+function startPoll() {
+  if (evalTimer) clearInterval(evalTimer);   // 关键：先清掉上一轮，避免多 timer 并发
+  pollFailures = 0;
+  let wasRunning = false;
+  evalTimer = setInterval(async () => {
+    let d;
+    try {
+      const r = await fetch('/api/eval/status');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+      pollFailures = 0;
+    } catch (e) {
+      // 网络/服务端异常：不要静默停摆，累计失败到阈值后明确告知
+      if (++pollFailures >= 5) {
+        clearInterval(evalTimer); evalTimer = null;
+        setState('状态查询失败', false, 'bad');
+        toast('无法获取评估状态（已重试 5 次），请检查服务是否正常', 'error');
+      }
+      return;
+    }
+
+    const name = CN[d.kind] || d.kind || '';
+    if (d.running) {
+      wasRunning = true;
+      setState('评估中：' + name, true);
+      return;
+    }
+
+    clearInterval(evalTimer); evalTimer = null;
+    if (d.state === 'failed') {
+      setState('评估失败', false, 'bad');
+      // 失败时把日志尾部提示出来，直接给出可排查的信息
+      const tail = Array.isArray(d.log) && d.log.length
+        ? d.log.slice(-8).join('\n') : '（无日志）';
+      toast('评估失败（exit_code=' + d.exit_code + '），详见页面日志', 'error');
+      const bar = document.getElementById('evalBar');
+      if (bar && !bar.dataset.errShown) {
+        bar.dataset.errShown = '1';
+        const pre = document.createElement('pre');
+        pre.className = 'log-tail';
+        pre.textContent = tail;
+        bar.appendChild(pre);
+      }
+      return;
+    }
+    setState('空闲', false);
+    // wasRunning：本次轮询期间观察到过运行态 → 正常完成路径
+    // state==='done'：任务可能在两次轮询间隔内就跑完了，用后端状态兜底，
+    //                 避免「已完成但页面不刷新」
+    if (wasRunning || d.state === 'done') {
+      toast('评估完成，页面即将刷新');
+      setTimeout(() => location.reload(), 1200);
+    }
   }, 2000);
 }
-pollEval();
+
+// 首次进入页面：仅在后端确实有任务在跑时才轮询，避免无谓的定时请求
+(async () => {
+  try {
+    const r = await fetch('/api/eval/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.running) startPoll();
+    else if (d.state === 'failed') setState('上次评估失败', false, 'bad');
+  } catch (e) { /* 首次探测失败静默忽略，不打扰用户 */ }
+})();
 </script>
 {% endblock %}

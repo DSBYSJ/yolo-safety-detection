@@ -132,8 +132,8 @@ async function pollStatus() {
     // ---- 暂停/继续/停止 按钮：暂停时徽标变琥珀色 ----
     trRunning = !!d.running; trPaused = !!d.paused;
     if (trPaused) { st.textContent = '已暂停'; }
-    st.style.color = trPaused ? '#d97706' : '';
-    st.style.background = trPaused ? 'rgba(217,119,6,.15)' : '';
+    st.style.color = trPaused ? '#fbbf24' : '';
+    st.style.background = trPaused ? 'rgba(251,191,36,.16)' : '';
     const bp = document.getElementById('btnPause'), bs = document.getElementById('btnStop');
     bp.disabled = !trRunning;
     bp.textContent = trPaused ? '继续' : '暂停';
@@ -148,20 +148,28 @@ async function pollStatus() {
     const h = d.history || [];
     if (h.length && (d.running || h.length > 1)) {
       const c = ensureChart();
+      // 配色随主题：从 CSS 变量取快照（ECharts 不吃 var()）
+      const cs = getComputedStyle(document.documentElement);
+      const pv = (n, f) => (cs.getPropertyValue(n) || '').trim() || f;
+      const AX = pv('--chart-axis', '#2c3244'), SP = pv('--chart-split', '#1b1f2b'),
+            LB = pv('--chart-label', '#819aab'), LG = pv('--chart-legend', '#a8bccd'),
+            WARN = pv('--chart-warn', '#fbbf24'), ACC = pv('--chart-accent', '#1aacc0');
       c.setOption({
+        // 顶层调色板：图例色块取自这里，不设的话图例是默认蓝/红
+        color: [WARN, ACC],
         tooltip: {trigger: 'axis'},
-        legend: {data: ['box_loss', 'mAP@0.5'], textStyle: {color: '#475569'}},
+        legend: {data: ['box_loss', 'mAP@0.5'], textStyle: {color: LG}},
         grid: {left: 56, right: 56, top: 36, bottom: 30},
-        xAxis: {type: 'category', data: h.map(x => x.epoch), axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}},
+        xAxis: {type: 'category', data: h.map(x => x.epoch), axisLine:{lineStyle:{color:AX}}, axisLabel:{color:LB}},
         yAxis: [
-          {type: 'value', name: '损失', axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}, splitLine:{lineStyle:{color:'#eef2f7'}}},
-          {type: 'value', name: 'mAP', min: 0, max: 1, axisLine:{lineStyle:{color:'#d7dde8'}}, axisLabel:{color:'#64748b'}, splitLine:{show:false}}
+          {type: 'value', name: '损失', axisLine:{lineStyle:{color:AX}}, axisLabel:{color:LB}, splitLine:{lineStyle:{color:SP}}},
+          {type: 'value', name: 'mAP', min: 0, max: 1, axisLine:{lineStyle:{color:AX}}, axisLabel:{color:LB}, splitLine:{show:false}}
         ],
         series: [
-          {name: 'box_loss', type: 'line', smooth: true, showSymbol: false, data: h.map(x => x.box_loss), itemStyle: {color: '#d97706'}},
-          {name: 'mAP@0.5', type: 'line', smooth: true, showSymbol: false, yAxisIndex: 1, data: h.map(x => x.mAP50), itemStyle: {color: '#2563eb'}}
+          {name: 'box_loss', type: 'line', smooth: true, showSymbol: false, data: h.map(x => x.box_loss), itemStyle: {color: WARN}},
+          {name: 'mAP@0.5', type: 'line', smooth: true, showSymbol: false, yAxisIndex: 1, data: h.map(x => x.mAP50), itemStyle: {color: ACC}}
         ]
-      });
+      }, true);
     }
   } catch (e) {}
 }

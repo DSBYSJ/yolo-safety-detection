@@ -92,3 +92,10 @@ _dl_*.sh
 # 第三方数据集说明文本（无保留价值）
 *_ppe-detection.txt
 *_face-mask-detection.txt
+
+# 皮肤/主题改造前的样式快照（本地还原用，不入库）
+_design_backup/
+
+# 本地视觉审计脚本与截图（含真实页面数据，不入库）
+_shots/
+_server.log

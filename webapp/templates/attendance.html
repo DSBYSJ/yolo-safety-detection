@@ -213,6 +213,7 @@
 <script>
 const today0 = "{{ today }}";
 let chart = null;
+let LAST_TREND = null;   // 缓存趋势数据，供主题切换时原地重绘
 
 /* ============================================================
    人脸识别打卡（独立模块）
@@ -356,8 +357,8 @@ const PC = {
     faces.forEach(f => {
       const b = f.box; if (!b) return;
       const x = b[0] * kx, y = b[1] * ky, w = (b[2] - b[0]) * kx, h = (b[3] - b[1]) * ky;
-      const color = f.is_temp ? '#d97706'
-                  : (f.checked ? '#16a34a' : '#0891b2');
+      const color = f.is_temp ? '#fbbf24'
+                  : (f.checked ? '#34d399' : '#67e8f9');
       ctx.strokeStyle = color;
       ctx.strokeRect(x, y, w, h);
       const label = f.name + (f.is_temp ? '（未注册）'
@@ -429,7 +430,7 @@ const PC = {
       this.setStatus(d.status, this.lastWho, d.record ? d.record.score : (d.status ? d.status.score : ''));
       this.el('pcWho').textContent = this.lastWho;
       this.el('pcHudState').textContent = '✓ 打卡成功';
-      this.el('pcHudState').style.color = '#16a34a';
+      this.el('pcHudState').style.color = '#34d399';
       this.tip(d.message || '打卡成功', 'ok');
       toast(d.message || '打卡成功', 'ok');
       await this.loadHistory();
@@ -440,7 +441,7 @@ const PC = {
     switch (d.reason) {
       case 'cooldown':
         this.el('pcHudState').textContent = '已打卡（冷却中）';
-        this.el('pcHudState').style.color = '#16a34a';
+        this.el('pcHudState').style.color = '#34d399';
         this.tip(d.message, 'ok');
         if (d.status) this.setStatus(d.status, d.status.person_name, d.status.score);
         break;
@@ -451,7 +452,7 @@ const PC = {
         break;
       case 'no_registered':
         this.el('pcHudState').textContent = '人脸未注册';
-        this.el('pcHudState').style.color = '#d97706';
+        this.el('pcHudState').style.color = '#fbbf24';
         if (faces.length) {
           this.el('pcWho').textContent = faces[0].name + '（未注册）';
         }
@@ -641,9 +642,24 @@ async function loadTrend() {
   if (!chart) chart = echarts.init(el);
 
   const items = d.items;
+  LAST_TREND = items;
   // 无数据的日子单独一类散点（灰色虚线），避免被读成「全员缺勤」
   const nodata = items.map((it, i) => it.day_status === 'no_data' ? [i, it.present] : null)
                       .filter(Boolean);
+
+  // 配色随主题：从 CSS 变量取快照
+  const cs = getComputedStyle(document.documentElement);
+  const pv = (n, f) => (cs.getPropertyValue(n) || '').trim() || f;
+  const AX = pv('--chart-axis', '#2c3244'), SP = pv('--chart-split', '#1b1f2b'),
+        LB = pv('--chart-label', '#819aab'), LG = pv('--chart-legend', '#a8bccd'),
+        OK = pv('--chart-ok', '#34d399'), GRAY = pv('--chart-gray', '#64718a'),
+        WARN = pv('--chart-warn', '#fbbf24');
+  const areaOf = hex => {
+    const h = hex.replace('#', '');
+    const n = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},.12)`;
+  };
 
   chart.setOption({
     grid: { left: 40, right: 20, top: 30, bottom: 30 },
@@ -656,28 +672,36 @@ async function loadTrend() {
              + (it.day_status === 'no_data' ? '<br/><b>当日无任何识别记录（无数据）</b>' : '');
       }
     },
-    xAxis: { type: 'category', data: items.map(i => i.date), axisLabel: { fontSize: 11 } },
-    yAxis: { type: 'value', minInterval: 1, axisLabel: { fontSize: 11 } },
+    xAxis: {
+      type: 'category', data: items.map(i => i.date),
+      axisLabel: { fontSize: 11, color: LB }, axisLine: { lineStyle: { color: AX } }
+    },
+    yAxis: {
+      type: 'value', minInterval: 1,
+      axisLabel: { fontSize: 11, color: LB }, axisLine: { lineStyle: { color: AX } },
+      splitLine: { lineStyle: { color: SP } }
+    },
     series: [
       {
         name: '打卡人数', type: 'line', smooth: true, data: items.map(i => i.present),
-        itemStyle: { color: '#16a34a' }, areaStyle: { color: 'rgba(22,163,74,.08)' },
+        itemStyle: { color: OK }, areaStyle: { color: areaOf(OK) },
         symbolSize: 6
       },
       {
         name: '应到人数', type: 'line', data: items.map(i => i.expect),
-        itemStyle: { color: '#94a3b8' }, lineStyle: { type: 'dashed', width: 1 },
+        itemStyle: { color: GRAY }, lineStyle: { type: 'dashed', width: 1 },
         symbol: 'none'
       },
       {
         name: '无数据', type: 'scatter', data: nodata,
-        itemStyle: { color: '#d97706' }, symbolSize: 11, z: 5
+        itemStyle: { color: WARN }, symbolSize: 11, z: 5
       }
     ],
-    legend: { top: 0, textStyle: { fontSize: 11 } }
-  });
+    legend: { top: 0, textStyle: { fontSize: 11, color: LG } }
+  }, true);
   chart.resize();
 }
+window.addEventListener('themechange', () => { if (LAST_TREND) loadTrend(); });
 
 function esc(s) {
   return (s == null ? '' : String(s)).replace(/[&<>"']/g,

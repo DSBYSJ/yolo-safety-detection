@@ -199,12 +199,11 @@ def index():
         model_info.append(info)
     val_info = {}
     for kind in config.MODELS:
-        mj = config.RUNS_DIR / "val" / kind / "metrics.json"
-        if mj.exists():
-            try:
-                val_info[kind] = json.loads(mj.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        # 统一走 train_manager.eval_metrics：它会做 JSON 校验并对损坏文件给出 error，
+        # 避免各处重复实现「读文件 + 静默吞异常」的逻辑
+        info = train_manager.eval_metrics(kind)
+        if info.get("metrics"):
+            val_info[kind] = info["metrics"]
     recent, _ = db.query_records(page=1, size=6)
     return render_template(
         "index.html", page="home", summary=summary, model_info=model_info,
@@ -1300,7 +1299,9 @@ def api_eval_start():
     kind = body.get("kind", "helmet")
     if kind not in config.MODELS:
         return jsonify({"ok": False, "error": "kind 必须是 " + " / ".join(config.MODELS)}), 400
-    pid, err = train_manager.eval_start(kind)
+    imgsz = body.get("imgsz", 640)
+    batch = body.get("batch", 16)
+    pid, err = train_manager.eval_start(kind, imgsz=imgsz, batch=batch)
     if err:
         return jsonify({"ok": False, "error": err}), 400
     return jsonify({"ok": True, "pid": pid})
