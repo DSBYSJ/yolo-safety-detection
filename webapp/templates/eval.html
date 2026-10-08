@@ -3,7 +3,7 @@
 {% block pagetitle %}模型评估{% endblock %}
 {% block content %}
 <div class="card" id="evalBar">
-  <div class="filter-bar" style="margin:0">
+  <div class="filter-bar no-mb">
     <b>在验证集上运行完整评估（P / R / mAP / 混淆矩阵 / PR 曲线）：</b>
     <select id="evalKind">
       {% for k, m in MODELS.items() %}<option value="{{ k }}">{{ m.title }}</option>

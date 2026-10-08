@@ -128,11 +128,11 @@ function weightsTable(list) {
     '<td class="' + (w.exists ? 'ok' : 'miss') + '">' + (w.exists ? (w.loaded ? '已加载' : '待加载') : '缺失') + '</td>' +
     '<td>' + (w.exists ? '<button class="btn ghost sm danger" onclick="delWeight(\'' + w.kind + '\')">移除</button>' : '-') + '</td>' +
     '</tr>').join('');
-  return '<h3 style="margin:0 0 10px">当前正在使用的权重</h3>' +
+  return '<h3 class="modal-title">当前正在使用的权重</h3>' +
     '<table class="w-table"><thead><tr>' +
     '<th>检测任务</th><th>权重文件</th><th>大小</th><th>最近部署</th><th>来源</th><th>状态</th><th>操作</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table>' +
-    '<p class="muted" style="margin-top:10px;font-size:12.5px">' +
+    '<p class="modal-note">' +
     '在【模型训练】页的历史训练记录里点「部署为线上模型」即可切换；部署后此处会更新。</p>';
 }
 async function delWeight(kind) {
