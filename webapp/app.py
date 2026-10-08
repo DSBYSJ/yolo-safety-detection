@@ -72,6 +72,73 @@ def api_env():
     return jsonify({"device": device, "torch": torch_ver})
 
 
+# 部署记录：记住每个模型当前用的是哪次训练产出的权重（界面顶部展示用）
+DEPLOY_STATE = config.MODEL_DIR / ".deployed.json"
+
+
+def _read_deploy_state() -> dict:
+    try:
+        return json.loads(DEPLOY_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_deploy(kind: str, run: str) -> None:
+    state = _read_deploy_state()
+    state[kind] = {"run": run, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        config.MODEL_DIR.mkdir(exist_ok=True)
+        # 用二进制写入，避免个别环境对文本覆盖写的拦截
+        DEPLOY_STATE.write_bytes(json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
+    except OSError:
+        pass
+
+
+def _weights_info() -> list:
+    """当前线上权重清单：文件名、大小、时间、来源训练、是否已加载进内存。"""
+    state = _read_deploy_state()
+    out = []
+    for kind, meta in config.MODELS.items():
+        p = config.MODEL_DIR / meta["file"]
+        info = {
+            "kind": kind,
+            "title": meta["title"],
+            "file": meta["file"],
+            "exists": p.exists(),
+            "size": None,
+            "mtime": None,
+            "source": None,
+            "deployed_at": None,
+            "loaded": kind in detector._model_cache,
+        }
+        if p.exists():
+            st = p.stat()
+            info["size"] = st.st_size
+            info["mtime"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
+        rec = state.get(kind) or {}
+        info["source"] = rec.get("run")
+        info["deployed_at"] = rec.get("time")
+        out.append(info)
+    return out
+
+
+@app.get("/api/weights/current")
+def api_weights_current():
+    """当前正在使用的权重（界面顶部「当前权重」点击刷新时调用）。"""
+    return jsonify({"ok": True, "weights": _weights_info()})
+
+
+@app.context_processor
+def inject_common():
+    """给所有模板注入模型清单、类别中文名与当前权重，供界面渲染。"""
+    return {
+        "MODELS": config.MODELS,
+        "CLASS_CN": config.CLASS_CN,
+        "BAD_CLASSES": config.BAD_CLASSES,
+        "WEIGHTS": _weights_info(),
+    }
+
+
 @app.post("/api/train/deploy")
 def api_train_deploy():
     """把某次历史训练的最优权重部署为线上模型"""
@@ -79,14 +146,23 @@ def api_train_deploy():
     name = body.get("run", "")
     kind = body.get("kind", "")
     if kind not in config.MODELS:
-        return jsonify({"ok": False, "error": "kind 必须是 helmet 或 mask"}), 400
+        return jsonify({"ok": False, "error": "kind 必须是 " + " / ".join(config.MODELS)}), 400
     src = config.RUNS_DIR / name / "weights" / "best.pt"
     if not src.exists():
         return jsonify({"ok": False, "error": f"权重不存在: {src}"}), 400
     config.MODEL_DIR.mkdir(exist_ok=True)
-    shutil.copy(src, config.MODEL_DIR / config.MODELS[kind]["file"])
+    dst = config.MODEL_DIR / config.MODELS[kind]["file"]
+    shutil.copy(src, dst)
     detector._model_cache.pop(kind, None)  # 让检测服务下次重新加载新权重
-    return jsonify({"ok": True})
+    _record_deploy(kind, name)
+    return jsonify({
+        "ok": True,
+        "kind": kind,
+        "file": dst.name,
+        "run": name,
+        "size": dst.stat().st_size,
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
 
 @app.route("/runs/<path:p>")
@@ -417,9 +493,12 @@ def camera_feed():
 
 @app.post("/api/camera/kind")
 def api_camera_kind():
-    kind = request.json.get("kind", "helmet")
+    body = request.get_json(force=True, silent=True) or {}
+    kind = body.get("kind", "helmet")
+    if kind not in config.MODELS:
+        return jsonify({"ok": False, "error": "kind 必须是 " + " / ".join(config.MODELS)}), 400
     camera.set_kind(kind)
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "kind": kind})
 
 
 @app.post("/api/camera/face")
@@ -1065,7 +1144,7 @@ def api_train_start():
     body = request.get_json(force=True, silent=True) or {}
     kind = body.get("kind", "helmet")
     if kind not in config.MODELS:
-        return jsonify({"ok": False, "error": "kind 必须是 helmet 或 mask"}), 400
+        return jsonify({"ok": False, "error": "kind 必须是 " + " / ".join(config.MODELS)}), 400
     size = body.get("size", "s")
     if size not in ("n", "s", "m"):
         return jsonify({"ok": False, "error": "模型规模仅支持 n/s/m"}), 400
@@ -1089,6 +1168,127 @@ def api_train_status():
     return jsonify(train_manager.status())
 
 
+def _safe_run_dir(name: str):
+    """把训练记录名解析成 runs 下的目录，拒绝路径穿越与非法名。"""
+    if not name or name != os.path.basename(name) or name in (".", ".."):
+        return None
+    try:
+        d = (config.RUNS_DIR / name).resolve()
+        d.relative_to(config.RUNS_DIR.resolve())
+    except (ValueError, OSError):
+        return None
+    return d if d.is_dir() else None
+
+
+def _dir_size(path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+@app.post("/api/train/runs/delete")
+def api_train_run_delete():
+    """删除一次历史训练记录：runs/<name> 整个目录（含检查点、曲线、日志）。
+
+    注意：这是**永久删除**，会把该次训练的 best.pt / last.pt / epochN.pt 一并清掉。
+    若它正好是当前线上权重的来源，只清掉来源登记，models/ 下已部署的副本不受影响。
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    name = str(body.get("name", "")).strip()
+    d = _safe_run_dir(name)
+    if d is None:
+        return jsonify({"ok": False, "error": "训练记录不存在或名称非法"}), 400
+    st = train_manager.status()
+    active = f"{st.get('meta', {}).get('kind', '')}_{st.get('meta', {}).get('size', '')}"
+    if st.get("running") and active == name:
+        return jsonify({"ok": False, "error": "该记录正在训练中，请先停止训练再删除"}), 400
+    freed = _dir_size(d)
+    try:
+        shutil.rmtree(d)
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"删除失败：{e}"}), 500
+    # 如果被删的是当前线上权重的来源，清掉来源登记（避免界面显示一个已不存在的训练）
+    state = _read_deploy_state()
+    changed = False
+    for k, rec in list(state.items()):
+        if (rec or {}).get("run") == name:
+            rec = dict(rec or {})
+            rec["run"] = None
+            rec["note"] = f"来源训练 {name} 已删除"
+            state[k] = rec
+            changed = True
+    if changed:
+        try:
+            DEPLOY_STATE.write_bytes(json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
+        except OSError:
+            pass
+    return jsonify({"ok": True, "name": name, "freed": freed})
+
+
+@app.post("/api/weights/delete")
+def api_weights_delete():
+    """移除某个已部署权重：文件移入 models/_trash/（可恢复），并解除部署登记。
+
+    注意：detector.model_path() 在 models/<kind>.pt 缺失时会**回退**到
+    runs/<kind>*/weights/best.pt，所以只删这一份不一定让检测不可用，
+    要彻底移除需连同 runs 下同名训练记录一起删除。
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    kind = str(body.get("kind", "")).strip()
+    if kind not in config.MODELS:
+        return jsonify({"ok": False, "error": "kind 必须是 " + " / ".join(config.MODELS)}), 400
+    p = config.MODEL_DIR / config.MODELS[kind]["file"]
+    if not p.exists():
+        return jsonify({"ok": False, "error": f"权重文件不存在：{p.name}"}), 400
+    trash = config.MODEL_DIR / "_trash"
+    trash.mkdir(exist_ok=True)
+    dst = trash / f"{p.stem}_{time.strftime('%Y%m%d%H%M%S')}{p.suffix}"
+    try:
+        shutil.move(str(p), str(dst))
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"移除失败：{e}"}), 500
+    detector._model_cache.pop(kind, None)   # 让检测服务忘记已缓存的旧权重
+    state = _read_deploy_state()
+    if kind in state:
+        state.pop(kind, None)
+        try:
+            DEPLOY_STATE.write_bytes(json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
+        except OSError:
+            pass
+    return jsonify({"ok": True, "kind": kind, "moved_to": str(dst)})
+
+
+def _train_control(fn):
+    """训练控制类接口（暂停/继续/停止）的统一返回。"""
+    ok, err = fn()
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+    return jsonify({"ok": True, "state": train_manager.status()})
+
+
+@app.post("/api/train/pause")
+def api_train_pause():
+    """暂停训练：挂起训练进程树，进度与显存状态原样保留。"""
+    return _train_control(train_manager.pause)
+
+
+@app.post("/api/train/resume")
+def api_train_resume():
+    """继续被暂停的训练。"""
+    return _train_control(train_manager.resume)
+
+
+@app.post("/api/train/stop")
+def api_train_stop():
+    """停止训练：结束进程树并释放显存；已完成轮次的产物保留在 runs 目录。"""
+    return _train_control(train_manager.stop)
+
+
 @app.get("/api/train/runs")
 def api_train_runs():
     return jsonify({"ok": True, "runs": train_manager.runs_list()})
@@ -1099,7 +1299,7 @@ def api_eval_start():
     body = request.get_json(force=True, silent=True) or {}
     kind = body.get("kind", "helmet")
     if kind not in config.MODELS:
-        return jsonify({"ok": False, "error": "kind 必须是 helmet 或 mask"}), 400
+        return jsonify({"ok": False, "error": "kind 必须是 " + " / ".join(config.MODELS)}), 400
     pid, err = train_manager.eval_start(kind)
     if err:
         return jsonify({"ok": False, "error": err}), 400

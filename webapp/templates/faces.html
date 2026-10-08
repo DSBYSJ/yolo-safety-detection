@@ -4,7 +4,7 @@
 {% block content %}
 <div class="card">
   <div class="card-head">
-    <h2>提交人脸并命名</h2>
+    <h3 class="card-title">提交人脸并命名</h3>
     <span class="badge {{ 'info' if ready else 'danger' }}" id="modelBadge">
       {{ '模型就绪' if ready else '模型未就绪' }}
     </span>
@@ -41,7 +41,7 @@
 
 <div class="card">
   <div class="card-head">
-    <h2>已录入人员</h2>
+    <h3 class="card-title">已录入人员</h3>
     <span class="flex-sp"></span>
     <span class="hint" id="galleryCount">-</span>
     <button class="btn danger ghost sm" id="btnDelPersons">删除选中</button>

@@ -10,6 +10,7 @@
       <select id="tKind">
         <option value="helmet">安全帽检测（helmet / head）</option>
         <option value="mask">口罩检测（mask / face）</option>
+        <option value="ppe">PPE 防护装备检测（helmet / no-helmet / no-vest / person / vest）</option>
       </select>
     </div>
     <div class="field">
@@ -33,6 +34,7 @@
         <li>训练在后台 GPU 上进行，可离开页面，进度实时刷新；</li>
         <li>训练完成后最优权重自动部署到 models/&lt;kind&gt;.pt 并投入检测服务；</li>
         <li>8GB 显存建议 batch ≤ 16；若显存不足请调小 batch 或 imgsz。</li>
+        <li>训练中可随时<b>暂停 / 继续</b>；「停止」会结束进程并释放显存，已完成的轮次仍保留在 runs 目录。</li>
       </ul>
     </div>
   </div>
@@ -41,6 +43,10 @@
     <div class="card-head">
       <h3 class="card-title">训练进度</h3>
       <span class="badge" id="trState">空闲</span>
+      <div class="train-ctrl">
+        <button class="btn ghost sm" id="btnPause" disabled>暂停</button>
+        <button class="btn ghost sm danger" id="btnStop" disabled>停止</button>
+      </div>
     </div>
     <div class="kv-grid">
       <div class="kv"><span>当前任务</span><b id="trKind">-</b></div>
@@ -71,6 +77,8 @@
 {% block scripts %}
 <script>
 let chart = null;
+let trRunning = false;   // 训练进程是否在跑
+let trPaused = false;    // 是否处于暂停（进程被挂起）
 function ensureChart() {
   if (!chart) chart = echarts.init(document.getElementById('chTrain'));
   return chart;
@@ -90,6 +98,26 @@ document.getElementById('btnTrain').addEventListener('click', async () => {
   else toast(d.error || '启动失败', 'error');
 });
 
+/* ---------- 暂停 / 继续 / 停止 ---------- */
+const TRAIN_ACTIONS = {
+  pause:  {url: '/api/train/pause',  label: '暂停'},
+  resume: {url: '/api/train/resume', label: '继续'},
+  stop:   {url: '/api/train/stop',   label: '停止'}
+};
+async function ctrlTrain(action) {
+  const a = TRAIN_ACTIONS[action];
+  if (!a) return;
+  if (action === 'stop' && !confirm('确认停止当前训练？\n已完成的轮次与检查点会保留在 runs 目录，不会丢失。')) return;
+  try {
+    const r = await fetch(a.url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    const d = await r.json();
+    if (d.ok) { toast('已' + a.label + '训练'); pollStatus(); }
+    else toast(d.error || (a.label + '失败'), 'error');
+  } catch (e) { toast(a.label + '请求失败', 'error'); }
+}
+document.getElementById('btnPause').addEventListener('click', () => ctrlTrain(trPaused ? 'resume' : 'pause'));
+document.getElementById('btnStop').addEventListener('click', () => ctrlTrain('stop'));
+
 function fmtDur(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = Math.floor(sec % 60);
   return h > 0 ? (h + '时' + m + '分') : (m > 0 ? (m + '分' + s + '秒') : (s + '秒'));
@@ -101,6 +129,15 @@ async function pollStatus() {
     const st = document.getElementById('trState');
     st.textContent = d.running ? '训练中' : (d.exit_code === 0 ? '已完成' : (d.exit_code != null ? '已结束(异常)' : '空闲'));
     st.className = 'badge ' + (d.running ? 'ok' : (d.exit_code === 0 ? 'info' : ''));
+    // ---- 暂停/继续/停止 按钮：暂停时徽标变琥珀色 ----
+    trRunning = !!d.running; trPaused = !!d.paused;
+    if (trPaused) { st.textContent = '已暂停'; }
+    st.style.color = trPaused ? '#d97706' : '';
+    st.style.background = trPaused ? 'rgba(217,119,6,.15)' : '';
+    const bp = document.getElementById('btnPause'), bs = document.getElementById('btnStop');
+    bp.disabled = !trRunning;
+    bp.textContent = trPaused ? '继续' : '暂停';
+    bs.disabled = !trRunning;
     document.getElementById('trKind').textContent = d.meta.kind ? (d.meta.kind + ' / yolov8' + d.meta.size) : '-';
     document.getElementById('trEpoch').textContent = d.epoch_done ? (d.epoch_done + ' / ' + d.meta.epochs) : '-';
     document.getElementById('trBest').textContent = d.best_mAP50 != null ? (d.best_mAP50 * 100).toFixed(2) + '%' : '-';
@@ -134,17 +171,30 @@ async function loadRuns() {
   const d = await (await fetch('/api/train/runs')).json();
   const tb = document.getElementById('runsTb');
   tb.innerHTML = (d.runs || []).map(function(r) {
-    const kind = r.name.indexOf('helmet') === 0 ? 'helmet' : (r.name.indexOf('mask') === 0 ? 'mask' : '');
+    const kind = r.name.indexOf('helmet') === 0 ? 'helmet' : (r.name.indexOf('mask') === 0 ? 'mask' : (r.name.indexOf('ppe') === 0 ? 'ppe' : ''));
     const depBtn = (r.weights && kind)
       ? '<button class="btn ghost sm" onclick="deploy(\'' + r.name + '\', \'' + kind + '\')">部署为线上模型</button>' : '';
+    const delBtn = '<button class="btn ghost sm danger" onclick="delRun(\'' + r.name + '\')" title="删除该次训练的全部产物">删除</button>';
     return '<tr>' +
       '<td>' + r.name + '</td>' +
       '<td>' + r.epochs + '</td>' +
       '<td>' + (r.best_mAP50 != null ? '<b class="txt-green">' + (r.best_mAP50 * 100).toFixed(2) + '%</b>' : '-') + '</td>' +
       '<td class="mono">' + (r.weights ? 'best.pt' : '未生成') + '</td>' +
       '<td>' + r.mtime + '</td>' +
-      '<td>' + depBtn + '</td></tr>';
+      '<td>' + depBtn + delBtn + '</td></tr>';
   }).join('') || '<tr><td colspan="6" class="empty">暂无训练记录</td></tr>';
+}
+
+async function delRun(run) {
+  if (!confirm('确认删除训练记录「' + run + '」？\n\n该目录下的 best.pt / last.pt / 每 10 轮检查点 / 训练曲线都会被永久删除，无法恢复。\n（models/ 下已部署的权重不受影响）')) return;
+  try {
+    const r = await fetch('/api/train/runs/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: run})});
+    const d = await r.json();
+    if (d.ok) {
+      toast('已删除 ' + run + '（释放 ' + (d.freed / 1048576).toFixed(1) + ' MB）');
+      loadRuns();
+    } else toast(d.error || '删除失败', 'error');
+  } catch (e) { toast('删除请求失败', 'error'); }
 }
 
 async function deploy(run, kind) {

@@ -11,8 +11,8 @@
     </div>
     <div class="cam-actions">
       <div class="seg" id="kindSeg">
-        <button class="seg-btn active" data-kind="helmet">安全帽检测</button>
-        <button class="seg-btn" data-kind="mask">口罩检测</button>
+        {% for k, m in MODELS.items() %}<button class="seg-btn{{ ' active' if loop.first }}" data-kind="{{ k }}">{{ m.title }}</button>
+        {% endfor %}
       </div>
       <button class="btn ghost" id="btnFace">开启人脸识别</button>
       <button class="btn ghost" id="btnSnap">抓拍存档</button>
@@ -113,7 +113,8 @@
 
 {% block scripts %}
 <script>
-const CN = {helmet:'安全帽', head:'未戴安全帽', mask:'口罩', face:'未戴口罩'};
+const CN = {{ CLASS_CN | tojson }};
+const BAD = new Set({{ BAD_CLASSES | list | tojson }});
 const feed = document.getElementById('feed');
 const camOff = document.getElementById('camOff');
 let feedStarted = false;

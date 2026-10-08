@@ -9,6 +9,9 @@ cheroot>=10.0
 # 目标检测框架（自动包含 OpenCV、Pandas、Matplotlib 等依赖）
 ultralytics>=8.3.0
 
+# 进程管理（在线训练的「暂停/继续」需要挂起训练进程树）
+psutil>=5.9
+
 # 图像处理
 opencv-python>=4.9.0
 pillow>=10.0

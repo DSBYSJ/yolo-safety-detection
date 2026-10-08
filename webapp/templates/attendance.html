@@ -10,10 +10,10 @@
      ============================================================ -->
 <div class="card pc-card" id="pcCard">
   <div class="card-head">
-    <h2 class="card-title">
+    <h3 class="card-title">
       人脸识别打卡
       <span class="pc-tag">独立模块</span>
-    </h2>
+    </h3>
     <span class="flex-sp"></span>
     <span class="badge {{ 'info' if ready else 'danger' }}" id="pcModelBadge">
       {{ '模型就绪' if ready else '模型未就绪' }}
@@ -126,7 +126,7 @@
 
 <div class="card">
   <div class="card-head">
-    <h2 class="card-title">今日打卡</h2>
+    <h3 class="card-title">今日打卡</h3>
     <span class="flex-sp"></span>
     <span class="badge {{ 'info' if ready else 'danger' }}" id="atBadge">
       {{ '模型就绪' if ready else '模型未就绪' }}
@@ -173,7 +173,7 @@
 
 <div class="card">
   <div class="card-head">
-    <h2 class="card-title">当日名单</h2>
+    <h3 class="card-title">当日名单</h3>
     <span class="flex-sp"></span>
     <span class="hint" id="atCount">-</span>
   </div>
@@ -192,7 +192,7 @@
 
 <div class="card">
   <div class="card-head">
-    <h2 class="card-title">近 14 天趋势</h2>
+    <h3 class="card-title">近 14 天趋势</h3>
   </div>
   <p class="hint">
     折线是「当日打卡人数 / 应到人数」。<strong>灰色虚线的点是当日完全没有识别记录</strong> ——

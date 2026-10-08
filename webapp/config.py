@@ -73,12 +73,29 @@ MODELS = {
         "names": {0: "mask", 1: "face"},
         "names_cn": {0: "口罩", 1: "未戴口罩"},
     },
+    # PPE 综合防护检测（新增类别：安全帽 + 安全背心 + 人员）
+    "ppe": {
+        "title": "PPE 防护装备检测",
+        "file": "ppe.pt",
+        "names": {0: "helmet", 1: "no-helmet", 2: "no-vest", 3: "person", 4: "vest"},
+        "names_cn": {0: "安全帽", 1: "未戴安全帽", 2: "未穿安全背心", 3: "人员", 4: "安全背心"},
+    },
 }
 
 ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv"}
 
 MAX_CONTENT_LENGTH = 300 * 1024 * 1024  # 单文件上传上限 300MB
+
+# ------------------------------------------------------------------ 类别名汇总
+# 把全部模型的「类别中文名」和「违规类别」汇总成全局映射，
+# 供前端渲染标签/标红使用；以后在 MODELS 里新增模型会自动生效，不用再改前端。
+CLASS_CN: dict = {}
+for _meta in MODELS.values():
+    CLASS_CN.update(_meta["names_cn"])
+
+# 判为「违规」的类别英文名（前端标红）
+BAD_CLASSES = {"head", "face", "no-helmet", "no-vest"}
 
 # 摄像头实时检测
 # 取流地址解析优先级：CAMERA_SOURCE（网络流）> CAMERA_INDEX（本地设备索引）

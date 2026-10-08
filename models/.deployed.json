@@ -1,0 +1,14 @@
+{
+  "helmet": {
+    "run": "helmet_m",
+    "time": "2026-10-01 21:16:05"
+  },
+  "mask": {
+    "run": "mask",
+    "time": null
+  },
+  "ppe": {
+    "run": "ppe",
+    "time": null
+  }
+}

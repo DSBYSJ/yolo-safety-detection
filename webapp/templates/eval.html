@@ -2,20 +2,20 @@
 {% block title %}模型评估 - 安全帽/口罩佩戴检测系统{% endblock %}
 {% block pagetitle %}模型评估{% endblock %}
 {% block content %}
-<div class="card" id="evalBar" style="margin-bottom:16px">
+<div class="card" id="evalBar">
   <div class="filter-bar" style="margin:0">
     <b>在验证集上运行完整评估（P / R / mAP / 混淆矩阵 / PR 曲线）：</b>
     <select id="evalKind">
-      <option value="helmet">安全帽模型</option>
-      <option value="mask">口罩模型</option>
+      {% for k, m in MODELS.items() %}<option value="{{ k }}">{{ m.title }}</option>
+      {% endfor %}
     </select>
     <button class="btn" id="btnEval">开始评估</button>
     <span id="evalState" class="badge">空闲</span>
   </div>
 </div>
 
-{% for kind in ['helmet', 'mask'] %}
-<div class="card" style="margin-bottom:16px">
+{% for kind in MODELS %}
+<div class="card">
   <div class="card-head">
     <h3 class="card-title">{{ titles[kind] }}评估结果</h3>
   </div>

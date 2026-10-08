@@ -6,8 +6,8 @@
   <div class="filter-bar">
     <select id="fKind">
       <option value="">全部类型</option>
-      <option value="helmet">安全帽检测</option>
-      <option value="mask">口罩检测</option>
+      {% for k, m in MODELS.items() %}<option value="{{ k }}">{{ m.title }}</option>
+      {% endfor %}
     </select>
     <select id="fSource">
       <option value="">全部来源</option>

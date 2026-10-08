@@ -34,6 +34,10 @@ yolov8*.pt
 # 统一按 README「六之五」自行下载或从训练产物复制，不入库
 models/*.pt
 models/*.onnx
+# 权重备份目录（同上，体积大不入库）
+models/_backup_*/
+# 被移除权重的暂存目录（可能含权重文件）
+models/_trash/
 # 人脸识别模型包（buffalo_l，188MB，超 GitHub 单文件限制）
 models/face/
 
@@ -65,3 +69,26 @@ webapp/data.db-journal
 
 # 人脸识别模型（188MB，超出 GitHub 单文件限制，按 README「六之五」自行下载）
 models/face/
+
+# ------------------------------------------------------------------
+# 训练产生的数据集图像（Kaggle/Roboflow 导出，体积大且含真实人脸照片，
+# 第三方数据集请按其许可自行获取，不入库）
+# ------------------------------------------------------------------
+datasets/*/images/
+datasets/*/labels/
+datasets/*/data_gpu.yaml
+
+# 其他预训练权重（yolo26 等，按需下载，不入库）
+weights/
+
+# 工作区临时文件 / 脚本日志
+*.log
+_todo_*.txt
+_dl_*.sh
+.mplconfig/
+.mplcache/
+.mplconfig/
+
+# 第三方数据集说明文本（无保留价值）
+*_ppe-detection.txt
+*_face-mask-detection.txt

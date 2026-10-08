@@ -54,7 +54,17 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <h1>{% block pagetitle %}{% endblock %}</h1>
-      <div id="envChip" class="env-chip"><span class="dot"></span>环境检测中…</div>
+      <div class="topbar-right">
+        <button type="button" class="weights-chip" id="weightsChip" title="当前正在使用的权重，点击查看详情">
+          <span class="wc-title">当前权重</span>
+          <span class="wc-list" id="weightsList">
+            {%- for w in WEIGHTS -%}
+              <b class="{{ 'wc-ok' if w.exists else 'wc-miss' }}">{{ w.file }}</b>
+            {%- endfor -%}
+          </span>
+        </button>
+        <div id="envChip" class="env-chip"><span class="dot"></span>环境检测中…</div>
+      </div>
     </header>
     <section class="content">
       {% with messages = get_flashed_messages(with_categories=true) %}
@@ -100,6 +110,53 @@ function toast(msg, type) {
   document.querySelector('.content').prepend(t);
   setTimeout(() => t.remove(), 3200);
 }
+/* ---------- 当前权重：点击查看详情 / 刷新 ---------- */
+function renderWeights(list) {
+  const el = document.getElementById('weightsList');
+  if (el && list && list.length) {
+    el.innerHTML = list.map(w =>
+      '<b class="' + (w.exists ? 'wc-ok' : 'wc-miss') + '">' + w.file + '</b>').join('');
+  }
+}
+function weightsTable(list) {
+  const rows = list.map(w => '<tr>' +
+    '<td>' + w.title + '</td>' +
+    '<td class="mono">' + w.file + '</td>' +
+    '<td>' + (w.exists ? (w.size / 1048576).toFixed(1) + ' MB' : '-') + '</td>' +
+    '<td>' + (w.deployed_at || w.mtime || '-') + '</td>' +
+    '<td>' + (w.source ? ('训练 ' + w.source) : '初始/手工放置') + '</td>' +
+    '<td class="' + (w.exists ? 'ok' : 'miss') + '">' + (w.exists ? (w.loaded ? '已加载' : '待加载') : '缺失') + '</td>' +
+    '<td>' + (w.exists ? '<button class="btn ghost sm danger" onclick="delWeight(\'' + w.kind + '\')">移除</button>' : '-') + '</td>' +
+    '</tr>').join('');
+  return '<h3 style="margin:0 0 10px">当前正在使用的权重</h3>' +
+    '<table class="w-table"><thead><tr>' +
+    '<th>检测任务</th><th>权重文件</th><th>大小</th><th>最近部署</th><th>来源</th><th>状态</th><th>操作</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<p class="muted" style="margin-top:10px;font-size:12.5px">' +
+    '在【模型训练】页的历史训练记录里点「部署为线上模型」即可切换；部署后此处会更新。</p>';
+}
+async function delWeight(kind) {
+  if (!confirm('确认移除「' + kind + '」的已部署权重？\n\n文件会移入 models/_trash/ 以便随时恢复。\n若 runs 目录下仍有同名训练记录，检测会自动回退用它最新的 best.pt；两者都删掉才会真正不可用。')) return;
+  try {
+    const r = await fetch('/api/weights/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({kind: kind})});
+    const d = await r.json();
+    if (d.ok) {
+      toast('已移除，文件在 models/_trash/');
+      const w = await (await fetch('/api/weights/current')).json();
+      renderWeights(w.weights);
+      openModal(weightsTable(w.weights || []));
+    } else toast(d.error || '移除失败', 'error');
+  } catch (e) { toast('移除请求失败', 'error'); }
+}
+
+document.getElementById('weightsChip').addEventListener('click', async () => {
+  try {
+    const d = await (await fetch('/api/weights/current')).json();
+    renderWeights(d.weights);
+    openModal(weightsTable(d.weights || []));
+  } catch (e) { toast('读取权重信息失败', 'error'); }
+});
+
 function openModal(html) {
   const m = document.getElementById('modal');
   document.getElementById('modalBox').innerHTML = html;
