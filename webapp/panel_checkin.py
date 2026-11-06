@@ -393,7 +393,7 @@ def check_in_by_face(img_bgr, day: str = "", note: str = "",
     day = validate_day(day) if day else today()
 
     if not face_db.face_model_ready():
-        return _fail("model_missing", "人脸模型未就绪，请先按 README「六之五」放入模型文件")
+        return _fail("model_missing", "人脸模型未就绪，请先按 README 7.1 放入模型文件")
 
     # 底库为空时任何脸都会被判成访客，此时提示「先去录人脸」比
     # 「未识别到已注册人员」准确得多

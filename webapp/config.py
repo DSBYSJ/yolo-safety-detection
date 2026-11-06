@@ -59,7 +59,7 @@ FACE_MODEL_ROOT = MODEL_DIR / "face"
 
 FACE_THUMB_DIR = WEBAPP_DIR / "static" / "faces"
 
-# 两类检测模型与类别定义（类别 id 与 datasets/*/data.yaml 保持一致）
+# 检测模型与类别定义（类别 id 与 datasets/*/data.yaml 保持一致）
 MODELS = {
     "helmet": {
         "title": "安全帽检测",

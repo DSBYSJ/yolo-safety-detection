@@ -314,7 +314,7 @@ def api_panel_face_checkin():
 
     与手机端检测接口一样是「逐帧」调用，因此必须**快速失败**：
     等不到推理锁就返回 503 + ``skip``，让前端丢掉这一帧继续下一帧，
-    而不是排队 —— 队列一旦堆积，页面会整体卡死（见 README 六之四第 4 节）。
+    而不是排队 —— 队列一旦堆积，页面会整体卡死（见 README 6.6 第 4 节）。
 
     人脸识别走 CPU（约 200~400ms/帧），前端调用频率被限制在
     约 0.5~1 秒一帧，远低于安全帽/口罩检测的帧率，
@@ -1506,7 +1506,7 @@ if __name__ == "__main__":
         print("  模式: HTTPS（手机可直接调用摄像头）")
     else:
         print("  模式: HTTP —— 手机端调摄像头受浏览器限制，")
-        print("        需配 HTTPS 或用 chrome://flags 白名单，详见 README「六之四」")
+        print("        需配 HTTPS 或用 chrome://flags 白名单，详见 README 6.6")
     print(f"  服务器: {'Flask 开发服务器（仅调试）' if force_dev else 'cheroot（生产级）'}")
     print("=" * 60)
 

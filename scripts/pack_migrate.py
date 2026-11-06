@@ -183,6 +183,7 @@ def main():
     checks = [
         ("models/helmet.pt", "安全帽权重（检测必需）"),
         ("models/mask.pt", "口罩权重（检测必需）"),
+        ("models/ppe.pt", "PPE 权重（检测必需）"),
         ("models/face", "人脸识别模型 buffalo_l（人脸模块需要）"),
         ("certs/cert.pem", "HTTPS 证书"),
         ("certs/key.pem", "HTTPS 私钥"),

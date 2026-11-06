@@ -80,7 +80,7 @@ if exist "%FLASK_SSL_CERT%" if exist "%FLASK_SSL_KEY%" set SCHEME=https
 if "%SCHEME%"=="https" goto show_banner
 echo [警告] 未找到证书 %FLASK_SSL_CERT% / %FLASK_SSL_KEY%
 echo        将以 HTTP 启动 —— 手机端将无法调用摄像头。
-echo        生成证书的办法见 README「六之四」。
+echo        生成证书的办法见 README 6.6。
 echo.
 
 :show_banner

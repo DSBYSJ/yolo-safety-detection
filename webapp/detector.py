@@ -4,6 +4,7 @@
 约定（与 datasets/*/data.yaml 一致）：
     helmet 模型: 0 = helmet 安全帽（合规）  1 = head 未戴安全帽（违规）
     mask   模型: 0 = mask   口罩（合规）    1 = face 未戴口罩（违规）
+    ppe    模型: 0..4 = helmet / no-helmet / no-vest / person / vest
 """
 import threading
 import time
